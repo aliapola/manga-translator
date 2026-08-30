@@ -1,0 +1,26 @@
+[
+  {
+    "source": "お前",
+    "translation": "تو",
+    "sourceLang": "ja",
+    "targetLang": "fa",
+    "caseSensitive": false,
+    "note": "ضمیر دوم شخص غیررسمی و کمی خشن"
+  },
+  {
+    "source": "ありがとう",
+    "translation": "ممنونم",
+    "sourceLang": "ja",
+    "targetLang": "fa",
+    "caseSensitive": false,
+    "note": ""
+  },
+  {
+    "source": "고마워",
+    "translation": "ممنونم",
+    "sourceLang": "ko",
+    "targetLang": "fa",
+    "caseSensitive": false,
+    "note": ""
+  }
+]
