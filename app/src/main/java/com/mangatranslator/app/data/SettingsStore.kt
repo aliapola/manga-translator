@@ -82,7 +82,6 @@ object SettingsStore {
     }
 
     /**
-    /**
      * Default online provider is MyMemory (free, no signup/key/card needed
      * at all, so it works out of the box). Users can still switch to
      * Google, Azure, or fully offline (NONE) from Settings.
