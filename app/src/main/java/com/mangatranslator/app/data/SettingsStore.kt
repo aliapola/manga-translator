@@ -16,7 +16,7 @@ import kotlinx.coroutines.flow.map
 private val Context.dataStore by preferencesDataStore(name = "manga_translator_settings")
 
 /** Which online translation service (if any) to try before the offline model. */
-enum class OnlineProvider { NONE, MYMEMORY, GOOGLE_FREE }
+enum class OnlineProvider { NONE, MYMEMORY, GOOGLE_FREE, GEMINI }
 
 /**
  * Persists user-configurable settings so OverlayService (a Service, with no
@@ -30,6 +30,8 @@ object SettingsStore {
     private val KEY_AUTO_TRANSLATE = booleanPreferencesKey("auto_translate_on_page_change")
     private val KEY_ONLINE_PROVIDER = stringPreferencesKey("online_translation_provider")
     private val KEY_MYMEMORY_EMAIL = stringPreferencesKey("mymemory_contact_email")
+    private val KEY_GEMINI_API_KEY = stringPreferencesKey("gemini_api_key")
+    private val KEY_GEMINI_MODEL = stringPreferencesKey("gemini_model")
 
     // Keys written by older versions that supported Microsoft Azure Translator.
     // They are no longer used; purgeLegacyKeys() wipes them (the API key in particular).
@@ -42,6 +44,9 @@ object SettingsStore {
 
     const val DEFAULT_OVERLAY_OPACITY = 0.92f
 
+    /** Editable in Settings, because Google retires/renames model names over time. */
+    const val DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+
     /** Default provider: Google (fast, no key). Users who had "azure" saved fall back to this too. */
     val DEFAULT_ONLINE_PROVIDER = OnlineProvider.GOOGLE_FREE
 
@@ -51,7 +56,9 @@ object SettingsStore {
         val buttonSizeDp: Int,
         val overlayOpacity: Float,
         val onlineProvider: OnlineProvider,
-        val myMemoryEmail: String
+        val myMemoryEmail: String,
+        val geminiApiKey: String,
+        val geminiModel: String
     )
 
     suspend fun snapshot(context: Context): Snapshot {
@@ -61,7 +68,9 @@ object SettingsStore {
             buttonSizeDp = prefs[KEY_BUTTON_SIZE_DP] ?: DEFAULT_BUTTON_SIZE_DP,
             overlayOpacity = prefs[KEY_OVERLAY_OPACITY] ?: DEFAULT_OVERLAY_OPACITY,
             onlineProvider = providerFrom(prefs),
-            myMemoryEmail = prefs[KEY_MYMEMORY_EMAIL] ?: ""
+            myMemoryEmail = prefs[KEY_MYMEMORY_EMAIL] ?: "",
+            geminiApiKey = prefs[KEY_GEMINI_API_KEY] ?: "",
+            geminiModel = prefs[KEY_GEMINI_MODEL] ?: DEFAULT_GEMINI_MODEL
         )
     }
 
@@ -114,6 +123,7 @@ object SettingsStore {
             "none" -> OnlineProvider.NONE
             "mymemory" -> OnlineProvider.MYMEMORY
             "google_free" -> OnlineProvider.GOOGLE_FREE
+            "gemini" -> OnlineProvider.GEMINI
             else -> DEFAULT_ONLINE_PROVIDER
         }
 
@@ -125,6 +135,7 @@ object SettingsStore {
             prefs[KEY_ONLINE_PROVIDER] = when (provider) {
                 OnlineProvider.MYMEMORY -> "mymemory"
                 OnlineProvider.GOOGLE_FREE -> "google_free"
+                OnlineProvider.GEMINI -> "gemini"
                 OnlineProvider.NONE -> "none"
             }
         }
@@ -139,6 +150,19 @@ object SettingsStore {
     suspend fun setMyMemoryEmail(context: Context, email: String) {
         context.applicationContext.dataStore.edit { prefs ->
             prefs[KEY_MYMEMORY_EMAIL] = email.trim()
+        }
+    }
+
+    fun geminiApiKeyFlow(context: Context): Flow<String> =
+        context.applicationContext.dataStore.data.map { prefs -> prefs[KEY_GEMINI_API_KEY] ?: "" }
+
+    fun geminiModelFlow(context: Context): Flow<String> =
+        context.applicationContext.dataStore.data.map { prefs -> prefs[KEY_GEMINI_MODEL] ?: DEFAULT_GEMINI_MODEL }
+
+    suspend fun setGemini(context: Context, apiKey: String, model: String) {
+        context.applicationContext.dataStore.edit { prefs ->
+            prefs[KEY_GEMINI_API_KEY] = apiKey.trim()
+            prefs[KEY_GEMINI_MODEL] = model.trim().ifBlank { DEFAULT_GEMINI_MODEL }
         }
     }
 

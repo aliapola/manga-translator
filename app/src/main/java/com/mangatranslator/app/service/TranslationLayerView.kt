@@ -35,7 +35,7 @@ class TranslationLayerView(
     private val items = ArrayList<Item>()
 
     private val backgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb((opacity.coerceIn(0.3f, 1f) * 255).toInt(), 15, 15, 15)
+        color = Color.argb((opacity.coerceIn(0.3f, 1f) * 255).toInt(), 255, 255, 255)
         style = Paint.Style.FILL
     }
 
@@ -109,7 +109,7 @@ class TranslationLayerView(
         private fun buildLayout(text: String, textSizePx: Float, width: Int): StaticLayout {
             // Each layout keeps a reference to its paint, so every layout gets its own.
             val paint = TextPaint().apply {
-                color = Color.WHITE
+                color = Color.BLACK
                 isAntiAlias = true
                 textSize = textSizePx
             }

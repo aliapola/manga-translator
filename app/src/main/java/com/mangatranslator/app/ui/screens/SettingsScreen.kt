@@ -10,6 +10,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.google.mlkit.nl.translate.TranslateLanguage
@@ -47,6 +48,10 @@ fun SettingsScreen(onBack: () -> Unit) {
         .collectAsState(initial = SettingsStore.DEFAULT_ONLINE_PROVIDER)
     val myMemoryEmailStored by SettingsStore.myMemoryEmailFlow(context)
         .collectAsState(initial = "")
+    val geminiKeyStored by SettingsStore.geminiApiKeyFlow(context)
+        .collectAsState(initial = "")
+    val geminiModelStored by SettingsStore.geminiModelFlow(context)
+        .collectAsState(initial = SettingsStore.DEFAULT_GEMINI_MODEL)
 
     Scaffold(
         topBar = {
@@ -136,7 +141,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             Text("ترجمه آنلاین (اختیاری)", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(4.dp))
             Text(
-                "برنامه به‌طور پیش‌فرض کاملاً آفلاین است. برای سرعت و کیفیت بیشتر می‌توانید از یکی از این دو سرویس آنلاین استفاده کنید. اگر اینترنت نبود یا سرویس در دسترس نبود، خودکار به مدل آفلاین برمی‌گردد.",
+                "برنامه به‌طور پیش‌فرض کاملاً آفلاین است. برای سرعت و کیفیت بیشتر می‌توانید از یکی از این سرویس‌های آنلاین استفاده کنید. اگر اینترنت نبود یا سرویس در دسترس نبود، خودکار به مدل آفلاین برمی‌گردد.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -178,6 +183,21 @@ fun SettingsScreen(onBack: () -> Unit) {
                 }
             }
 
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                RadioButton(
+                    selected = onlineProvider == OnlineProvider.GEMINI,
+                    onClick = { scope.launch { SettingsStore.setOnlineProvider(context, OnlineProvider.GEMINI) } }
+                )
+                Column {
+                    Text("Google Gemini (محاوره‌ای)")
+                    Text(
+                        "ترجمه کل صفحه در یک درخواست، به فارسی محاوره‌ای و بدون سانسور - نیاز به کلید رایگان",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
             if (onlineProvider == OnlineProvider.MYMEMORY) {
                 Spacer(Modifier.height(8.dp))
                 var emailField by remember(myMemoryEmailStored) { mutableStateOf(myMemoryEmailStored) }
@@ -196,6 +216,39 @@ fun SettingsScreen(onBack: () -> Unit) {
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "این ایمیل فقط یک شناسه‌ی سهمیه است، نه ثبت‌نام واقعی؛ می‌توانید همین فیلد را خالی هم بگذارید و با سهمیه‌ی روزانه‌ی ۵۰۰۰ کلمه کار کنید.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            if (onlineProvider == OnlineProvider.GEMINI) {
+                Spacer(Modifier.height(8.dp))
+                var keyField by remember(geminiKeyStored) { mutableStateOf(geminiKeyStored) }
+                var modelField by remember(geminiModelStored) { mutableStateOf(geminiModelStored) }
+                OutlinedTextField(
+                    value = keyField,
+                    onValueChange = { keyField = it },
+                    label = { Text("کلید API جمینای (Gemini)") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = modelField,
+                    onValueChange = { modelField = it },
+                    label = { Text("نام مدل (پیش‌فرض ${SettingsStore.DEFAULT_GEMINI_MODEL})") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = { scope.launch { SettingsStore.setGemini(context, keyField, modelField) } },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("ذخیره کلید و مدل") }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "راهنما: در aistudio.google.com/apikey با اکانت گوگل یک کلید رایگان بسازید. در لایه رایگان ممکن است گوگل از متن‌های ارسالی برای بهبود محصولاتش استفاده کند. اگر مدل پیش‌فرض دیگر وجود نداشت، یک مدل Flash جدیدتر را اینجا بنویسید. در صورت خطا یا محدودیت، موقتاً با Google Translate و سپس مدل آفلاین ترجمه می‌شود.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

@@ -146,7 +146,9 @@ class OverlayService : Service() {
             applyButtonSize()
         }
 
-        translationManager.updateOnlineConfig(settings.onlineProvider, settings.myMemoryEmail)
+        translationManager.updateOnlineConfig(
+            settings.onlineProvider, settings.myMemoryEmail, settings.geminiApiKey, settings.geminiModel
+        )
     }
 
     /** Loads the OCR model (and the offline translator, when it's the primary path) before the first tap. */
@@ -515,6 +517,18 @@ class OverlayService : Service() {
         }
 
         val translateStart = System.currentTimeMillis()
+
+        // Gemini mode: one request for the whole page (no-op for other providers).
+        try {
+            withContext(Dispatchers.Default) {
+                translationManager.prefetchBatch(blocks.map { it.text }, sourceLang, targetLang)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            AppLogger.error(this, TAG, "prefetchBatch threw", e)
+        }
+
         val outcomes = Channel<BlockOutcome>(Channel.UNLIMITED)
         var shown = 0
         var missingPack = false

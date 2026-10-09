@@ -25,7 +25,7 @@ data class TranslationResult(
 /**
  * Core translation pipeline:
  * 1. Session cache: the exact same text is never translated twice.
- * 2. Optional online provider (MyMemory / Google) - only if enabled, not in
+ * 2. Optional online provider (Gemini / Google / MyMemory) - only if enabled, not in
  *    a failure cooldown, and the device is actually online.
  * 3. On-device ML Kit model as the fallback / offline path.
  *
@@ -40,15 +40,19 @@ class TranslationManager(
     @Volatile private var translatorsLastUsed = System.currentTimeMillis()
     private val myMemoryClient = MyMemoryTranslatorClient()
     private val googleFreeClient = GoogleFreeTranslatorClient()
+    private val geminiClient = GeminiTranslatorClient()
 
     // Pushed in by OverlayService before each translation pass.
     @Volatile private var onlineProvider = OnlineProvider.NONE
     @Volatile private var myMemoryEmail = ""
+    @Volatile private var geminiApiKey = ""
+    @Volatile private var geminiModel = ""
 
     // If the online provider fails once (unreachable, blocked, timed out),
     // skip it for a short cooldown instead of paying a full timeout again
     // for every remaining text block on the page.
     @Volatile private var onlineCooldownUntil = 0L
+    @Volatile private var geminiCooldownUntil = 0L
 
     // "src>tgt" pairs whose language packs were already verified as downloaded.
     // Asking ML Kit for the downloaded-model list is comparatively slow, and it
@@ -62,9 +66,54 @@ class TranslationManager(
             size > CACHE_MAX_ENTRIES
     }
 
-    fun updateOnlineConfig(provider: OnlineProvider, myMemoryEmail: String) {
+    fun updateOnlineConfig(
+        provider: OnlineProvider,
+        myMemoryEmail: String,
+        geminiApiKey: String,
+        geminiModel: String
+    ) {
         this.onlineProvider = provider
         this.myMemoryEmail = myMemoryEmail
+        this.geminiApiKey = geminiApiKey
+        this.geminiModel = geminiModel
+    }
+
+    /**
+     * Gemini mode only: translates ALL [texts] of a page in a single request and
+     * stores the results in the session cache, so the per-text [translate] calls
+     * that follow are instant cache hits. Anything that fails here (no key,
+     * quota, blocked, offline) is simply left uncached and handled by the normal
+     * per-text path (Google, then the offline model). No-op for other providers.
+     */
+    suspend fun prefetchBatch(
+        texts: List<String>,
+        sourceLang: String,
+        targetLang: String = TranslateLanguage.PERSIAN
+    ) {
+        if (onlineProvider != OnlineProvider.GEMINI || geminiApiKey.isBlank()) return
+        if (System.currentTimeMillis() < geminiCooldownUntil) return
+        if (!NetworkUtils.isOnline(context)) return
+
+        val missing = texts.filter { it.isNotBlank() }.distinct().filter { text ->
+            synchronized(cache) { cache["$sourceLang|$targetLang|$text"] } == null
+        }
+        if (missing.isEmpty()) return
+
+        val translated = geminiClient.translateBatch(missing, sourceLang, targetLang, geminiApiKey, geminiModel)
+        if (translated == null) {
+            geminiCooldownUntil = System.currentTimeMillis() + ONLINE_COOLDOWN_MS
+            AppLogger.error(context, TAG, "Gemini batch failed (key/model/quota/blocked?) - falling back to Google/offline for ${ONLINE_COOLDOWN_MS}ms")
+            return
+        }
+        synchronized(cache) {
+            missing.forEachIndexed { index, original ->
+                val result = translated[index]
+                if (result.isNotBlank()) {
+                    cache["$sourceLang|$targetLang|$original"] =
+                        TranslationResult(original, result, TranslationSource.ONLINE)
+                }
+            }
+        }
     }
 
     private fun pairKey(sourceLang: String, targetLang: String) = "$sourceLang>$targetLang"
@@ -161,6 +210,9 @@ class TranslationManager(
         val translated = when (provider) {
             OnlineProvider.MYMEMORY -> myMemoryClient.translate(text, sourceLang, targetLang, myMemoryEmail)
             OnlineProvider.GOOGLE_FREE -> googleFreeClient.translate(text, sourceLang, targetLang)
+            // Gemini translates whole pages via prefetchBatch(); this single-text path is
+            // only reached when that batch failed, so use Google as the fallback.
+            OnlineProvider.GEMINI -> googleFreeClient.translate(text, sourceLang, targetLang)
             OnlineProvider.NONE -> null
         }
         if (!translated.isNullOrBlank()) return translated

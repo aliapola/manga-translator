@@ -12,7 +12,7 @@ ScreenCaptureService -> Foreground Service که MediaProjection را نگه می
 OverlayService       -> دکمه شناور + پنجره Overlay شفاف برای رسم ترجمه روی حباب‌ها
 OcrProcessor         -> اجرای ML Kit Text Recognition (لاتین/ژاپنی/کره‌ای/چینی)
 LanguagePackManager  -> دانلود/حذف/بررسی وضعیت بسته‌های زبان ML Kit Translate
-TranslationManager   -> کش نشست، ترجمه آنلاین اختیاری (Google/MyMemory) و در غیر این‌صورت مدل آفلاین
+TranslationManager   -> کش نشست، ترجمه آنلاین اختیاری (Gemini/Google/MyMemory) و در غیر این‌صورت مدل آفلاین
 TranslationLayerView -> لایه رسم ترجمه‌ها روی اسکرین‌شات؛ هر ترجمه به‌محض آماده شدن نمایش داده می‌شود
 Compose UI (HomeScreen, LanguagePackScreen, SettingsScreen)
 ```
