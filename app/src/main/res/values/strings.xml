@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">مترجم مانگا</string>
+    <string name="channel_capture_name">ضبط صفحه</string>
+    <string name="channel_overlay_name">ترجمه روی صفحه</string>
+    <string name="capture_notification_title">مترجم مانگا</string>
+    <string name="capture_notification_text">در حال آماده‌سازی گرفتن اسکرین‌شات...</string>
+    <string name="overlay_notification_title">مترجم مانگا فعال است</string>
+    <string name="overlay_notification_text">برای ترجمه، روی دکمه شناور ضربه بزنید</string>
+</resources>
