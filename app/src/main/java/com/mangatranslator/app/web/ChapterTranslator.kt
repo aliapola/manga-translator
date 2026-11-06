@@ -37,10 +37,15 @@ class ChapterTranslator(private val context: Context) {
     private val translator = TranslationManager(context)
     val dir: File = File(context.cacheDir, "webreader").apply { mkdirs() }
 
-    fun setEmail(email: String) = translator.updateConfig(email)
+    @Volatile private var colloquial = true
+
+    fun setConfig(email: String, colloquial: Boolean) {
+        this.colloquial = colloquial
+        translator.updateConfig(email, colloquial)
+    }
 
     fun fileFor(url: String, srcLang: String): File {
-        val md = MessageDigest.getInstance("MD5").digest("$url|$srcLang|v1".toByteArray())
+        val md = MessageDigest.getInstance("MD5").digest("$url|$srcLang|v2|c${if (colloquial) 1 else 0}".toByteArray())
         return File(dir, md.joinToString("") { "%02x".format(it) } + ".jpg")
     }
 

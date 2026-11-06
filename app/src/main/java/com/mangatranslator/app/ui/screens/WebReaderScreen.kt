@@ -22,7 +22,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -71,6 +73,7 @@ fun WebReaderScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val translator = remember { ChapterTranslator(context.applicationContext) }
+    val clipboard = LocalClipboardManager.current
 
     var urlField by rememberSaveable { mutableStateOf("") }
     var pageUrl by remember { mutableStateOf("") }
@@ -226,7 +229,10 @@ fun WebReaderScreen(onBack: () -> Unit) {
                 val ua = webView.settings.userAgentString
                 val srcLang = SettingsStore.sourceLangFlow(context).first()
                 val opacity = SettingsStore.overlayOpacityFlow(context).first()
-                translator.setEmail(SettingsStore.myMemoryEmailFlow(context).first())
+                translator.setConfig(
+                    SettingsStore.myMemoryEmailFlow(context).first(),
+                    SettingsStore.colloquialFlow(context).first()
+                )
 
                 val slots = Semaphore(2)   // حداکثر ۲ تصویر همزمان (حافظه)
                 coroutineScope {
@@ -319,13 +325,19 @@ fun WebReaderScreen(onBack: () -> Unit) {
                 OutlinedTextField(
                     value = urlField,
                     onValueChange = { urlField = it },
-                    placeholder = { Text("https://…/chapter-118/") },
+                    // label همیشه دیده می‌شود (placeholder فقط هنگام فوکوس نمایش داده می‌شود)
+                    label = { Text("آدرس چپتر را اینجا وارد یا paste کنید") },
+                    textStyle = LocalTextStyle.current.copy(textDirection = TextDirection.Ltr),
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
                     keyboardActions = KeyboardActions(onGo = { loadUrl() }),
                     modifier = Modifier.weight(1f)
                 )
                 Spacer(Modifier.width(8.dp))
+                OutlinedButton(onClick = {
+                    clipboard.getText()?.text?.let { urlField = it.trim() }
+                }) { Text("چسباندن") }
+                Spacer(Modifier.width(4.dp))
                 Button(onClick = { loadUrl() }) { Text("برو") }
             }
             AndroidView(

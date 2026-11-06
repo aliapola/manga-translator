@@ -140,7 +140,7 @@ class OverlayService : Service() {
         }
 
         val myMemoryEmail = SettingsStore.myMemoryEmailFlow(applicationContext).first()
-        translationManager.updateConfig(myMemoryEmail)
+        translationManager.updateConfig(myMemoryEmail, SettingsStore.colloquialFlow(applicationContext).first())
     }
 
     private val connection = object : ServiceConnection {

@@ -1,6 +1,7 @@
 package com.mangatranslator.app.ui.screens
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -40,8 +41,8 @@ fun SettingsScreen(onBack: () -> Unit) {
         .collectAsState(initial = false)
     val buttonSizeDp by SettingsStore.buttonSizeDpFlow(context)
         .collectAsState(initial = SettingsStore.DEFAULT_BUTTON_SIZE_DP)
-    val overlayOpacity by SettingsStore.overlayOpacityFlow(context)
-        .collectAsState(initial = SettingsStore.DEFAULT_OVERLAY_OPACITY)
+    val colloquial by SettingsStore.colloquialFlow(context)
+        .collectAsState(initial = true)
     val myMemoryEmailStored by SettingsStore.myMemoryEmailFlow(context)
         .collectAsState(initial = "")
 
@@ -116,16 +117,6 @@ fun SettingsScreen(onBack: () -> Unit) {
                 valueRange = SettingsStore.MIN_BUTTON_SIZE_DP.toFloat()..SettingsStore.MAX_BUTTON_SIZE_DP.toFloat()
             )
 
-            Spacer(Modifier.height(8.dp))
-            Text("شفافیت پس‌زمینه متن ترجمه: ${(overlayOpacity * 100).toInt()}%", style = MaterialTheme.typography.bodyMedium)
-            Slider(
-                value = overlayOpacity,
-                onValueChange = { newValue ->
-                    scope.launch { SettingsStore.setOverlayOpacity(context, newValue) }
-                },
-                valueRange = 0.3f..1f
-            )
-
             Spacer(Modifier.height(24.dp))
             Divider()
             Spacer(Modifier.height(16.dp))
@@ -137,6 +128,24 @@ fun SettingsScreen(onBack: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            Spacer(Modifier.height(8.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("ترجمه محاوره‌ای", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "متن کتابی را به زبان گفتاری تبدیل می‌کند (مثلاً «می‌خواهم» ← «می‌خوام»، «است» ← «ـه»).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = colloquial,
+                    onCheckedChange = { scope.launch { SettingsStore.setColloquial(context, it) } }
+                )
+            }
             Spacer(Modifier.height(8.dp))
             var emailField by remember(myMemoryEmailStored) { mutableStateOf(myMemoryEmailStored) }
             OutlinedTextField(

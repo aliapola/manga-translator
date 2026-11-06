@@ -44,8 +44,12 @@ class TranslationManager(private val context: Context) {
     // اگر MyMemory یک‌بار شکست خورد (قطعی/سهمیه)، مدتی دوباره تلاش نمی‌کنیم
     @Volatile private var cooldownUntil = 0L
 
-    fun updateConfig(email: String) {
+    /** تبدیل خروجی به فارسی محاوره‌ای (کش همیشه متن خام MyMemory را نگه می‌دارد). */
+    @Volatile var colloquial: Boolean = true
+
+    fun updateConfig(email: String, colloquial: Boolean = true) {
         contactEmail = email
+        this.colloquial = colloquial
     }
 
     /** فیلتر قبل از ارسال به API (مورد ۴). */
@@ -66,6 +70,11 @@ class TranslationManager(private val context: Context) {
 
     /** ترجمه یک متن. null یعنی لازم نبود یا ناموفق بود. */
     suspend fun translate(raw: String, sourceLang: String, targetLang: String = Lang.PERSIAN): String? {
+        val result = translateRaw(raw, sourceLang, targetLang) ?: return null
+        return if (colloquial && targetLang == Lang.PERSIAN) PersianColloquial.convert(result) else result
+    }
+
+    private suspend fun translateRaw(raw: String, sourceLang: String, targetLang: String): String? {
         if (!shouldTranslate(raw)) return null
         val text = normalize(raw)
         val key = cacheKey(text, sourceLang, targetLang)

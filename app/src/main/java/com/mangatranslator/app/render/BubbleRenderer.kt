@@ -12,8 +12,10 @@ import android.text.TextPaint
 /** رسم ترجمه (فارسی/RTL) روی کادر حباب؛ مشترک بین Overlay و وب‌ریدر. */
 object BubbleRenderer {
 
-    fun backgroundPaint(opacity: Float): Paint = Paint().apply {
-        color = Color.argb((opacity.coerceIn(0.3f, 1f) * 255).toInt(), 255, 255, 255)
+    /** پس‌زمینه کاملاً مات (بدون شفافیت) تا متن اصلی زیر آن دیده نشود. [opacity] دیگر استفاده نمی‌شود. */
+    @Suppress("UNUSED_PARAMETER")
+    fun backgroundPaint(opacity: Float = 1f): Paint = Paint().apply {
+        color = Color.WHITE
         style = Paint.Style.FILL
         isAntiAlias = true
     }
@@ -21,8 +23,11 @@ object BubbleRenderer {
     /** کادر را با رنگ پس‌زمینه می‌پوشاند و متن ترجمه را وسط آن می‌نویسد. */
     fun drawTranslation(canvas: Canvas, box: Rect, text: String, background: Paint) {
         if (box.width() <= 0 || box.height() <= 0) return
-        canvas.drawRect(box, background)
-        drawTextInBox(canvas, text, box)
+        // کادر OCR دقیقاً دور متن است؛ کمی بزرگش می‌کنیم تا لبه‌های متن اصلی بیرون نزند.
+        val pad = maxOf(6, (minOf(box.width(), box.height()) * 0.10f).toInt())
+        val padded = Rect(box.left - pad, box.top - pad, box.right + pad, box.bottom + pad)
+        canvas.drawRect(padded, background)
+        drawTextInBox(canvas, text, padded)
     }
 
     /** متن را وسط [box] می‌کشد و اندازه فونت را تا جا شدن کم می‌کند. */

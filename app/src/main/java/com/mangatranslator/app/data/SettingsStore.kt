@@ -24,6 +24,7 @@ object SettingsStore {
     private val KEY_OVERLAY_OPACITY = floatPreferencesKey("overlay_opacity")
     private val KEY_AUTO_TRANSLATE = booleanPreferencesKey("auto_translate_on_page_change")
     private val KEY_MYMEMORY_EMAIL = stringPreferencesKey("mymemory_contact_email")
+    private val KEY_COLLOQUIAL = booleanPreferencesKey("colloquial_persian")
 
     const val DEFAULT_BUTTON_SIZE_DP = 56
     const val MIN_BUTTON_SIZE_DP = 36
@@ -84,6 +85,18 @@ object SettingsStore {
     suspend fun setMyMemoryEmail(context: Context, email: String) {
         context.applicationContext.dataStore.edit { prefs ->
             prefs[KEY_MYMEMORY_EMAIL] = email.trim()
+        }
+    }
+
+    /** تبدیل ترجمه به فارسی محاوره‌ای (پیش‌فرض: روشن). */
+    fun colloquialFlow(context: Context): Flow<Boolean> =
+        context.applicationContext.dataStore.data.map { prefs ->
+            prefs[KEY_COLLOQUIAL] ?: true
+        }
+
+    suspend fun setColloquial(context: Context, enabled: Boolean) {
+        context.applicationContext.dataStore.edit { prefs ->
+            prefs[KEY_COLLOQUIAL] = enabled
         }
     }
 }
