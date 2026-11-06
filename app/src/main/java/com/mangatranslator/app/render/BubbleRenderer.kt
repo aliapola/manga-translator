@@ -13,7 +13,7 @@ import android.text.TextPaint
 object BubbleRenderer {
 
     fun backgroundPaint(opacity: Float): Paint = Paint().apply {
-        color = Color.argb((opacity.coerceIn(0.3f, 1f) * 255).toInt(), 15, 15, 15)
+        color = Color.argb((opacity.coerceIn(0.3f, 1f) * 255).toInt(), 255, 255, 255)
         style = Paint.Style.FILL
         isAntiAlias = true
     }
@@ -32,7 +32,7 @@ object BubbleRenderer {
         val availableHeight = (box.height() - padding * 2).coerceAtLeast(16)
 
         val textPaint = TextPaint().apply {
-            color = Color.WHITE
+            color = Color.BLACK
             isAntiAlias = true
         }
 

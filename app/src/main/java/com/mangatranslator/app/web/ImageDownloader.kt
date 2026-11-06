@@ -25,6 +25,10 @@ object ImageDownloader {
             .build()
     }
 
+    private fun sameSite(a: String, b: String): Boolean = try {
+        java.net.URI(a).host == java.net.URI(b).host
+    } catch (e: Exception) { false }
+
     suspend fun download(url: String, referer: String, userAgent: String, cookie: String?): ByteArray? =
         withContext(Dispatchers.IO) {
             repeat(2) {
@@ -32,6 +36,10 @@ object ImageDownloader {
                     val req = Request.Builder().url(url)
                         .header("User-Agent", userAgent)
                         .header("Referer", referer)
+                        .header("Accept-Language", "en-US,en;q=0.9")
+                        .header("Sec-Fetch-Dest", "image")
+                        .header("Sec-Fetch-Mode", "no-cors")
+                        .header("Sec-Fetch-Site", if (sameSite(url, referer)) "same-origin" else "cross-site")
                         .header("Accept", "image/webp,image/png,image/jpeg,image/*;q=0.8,*/*;q=0.5")
                         .apply { if (!cookie.isNullOrBlank()) header("Cookie", cookie) }
                         .build()

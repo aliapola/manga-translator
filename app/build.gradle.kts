@@ -73,6 +73,9 @@ dependencies {
     // HTTP client for MyMemory (shared instance, Keep-Alive + HTTP/2)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
+    // WebView extras (drop the X-Requested-With header that some sites block)
+    implementation("androidx.webkit:webkit:1.11.0")
+
     // Coroutines (play-services variant adds Task.await() used for ML Kit calls)
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")

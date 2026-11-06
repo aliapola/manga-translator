@@ -3,6 +3,7 @@ package com.mangatranslator.app.ui.screens
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.webkit.CookieManager
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
@@ -14,6 +15,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -24,6 +26,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
 import com.mangatranslator.app.data.SettingsStore
 import com.mangatranslator.app.util.AppLogger
 import com.mangatranslator.app.web.ChapterImageResult
@@ -78,6 +82,20 @@ fun WebReaderScreen(onBack: () -> Unit) {
     var showingOriginal by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("آدرس چپتر را وارد کنید، صفحه باز شود، سپس «ترجمه کل چپتر» را بزنید.") }
     var job by remember { mutableStateOf<Job?>(null) }
+    var desktopMode by remember { mutableStateOf(false) }
+
+    // WebView's default UA contains "; wv" and "Version/4.0", which many sites
+    // (Cloudflare, image CDNs) treat as a bot/embedded view and refuse to serve
+    // images to. Present a normal Chrome Mobile UA instead.
+    val mobileUa = remember {
+        WebSettings.getDefaultUserAgent(context)
+            .replace("; wv", "")
+            .replace(Regex("Version/\\d+\\.\\d+\\s?"), "")
+    }
+    val desktopUa = remember {
+        val ver = Regex("Chrome/([\\d.]+)").find(mobileUa)?.groupValues?.get(1) ?: "124.0.0.0"
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$ver Safari/537.36"
+    }
 
     val webView = remember {
         WebView(context).apply {
@@ -85,11 +103,44 @@ fun WebReaderScreen(onBack: () -> Unit) {
             settings.domStorageEnabled = true
             settings.useWideViewPort = true
             settings.loadWithOverviewMode = true
-            settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+            settings.loadsImagesAutomatically = true
+            settings.blockNetworkImage = false
+            settings.javaScriptCanOpenWindowsAutomatically = false
+            settings.setSupportMultipleWindows(false)
+            settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            settings.userAgentString = mobileUa
+            // Stop WebView from sending "X-Requested-With: <our package>", which
+            // some sites use to block embedded browsers.
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
+                WebSettingsCompat.setRequestedWithHeaderOriginAllowList(settings, emptySet())
+            }
             CookieManager.getInstance().setAcceptCookie(true)
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
 
             webViewClient = object : WebViewClient() {
+                // Block odd schemes (intent://, market:// from ads); keep http(s) in-app.
+                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                    val scheme = request.url.scheme
+                    return scheme != "http" && scheme != "https"
+                }
+
+                override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+                    if (request.isForMainFrame) {
+                        status = "خطا در بارگذاری صفحه: ${error.description}"
+                    } else {
+                        AppLogger.error(context, TAG, "resource error ${error.errorCode} ${error.description}: ${request.url}")
+                    }
+                }
+
+                override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse) {
+                    val code = errorResponse.statusCode
+                    if (request.isForMainFrame) {
+                        status = "سایت خطای HTTP $code برگرداند. گزینه «دسکتاپ» را امتحان کنید."
+                    } else {
+                        AppLogger.error(context, TAG, "HTTP $code for ${request.url}")
+                    }
+                }
+
                 // تصاویر ترجمه‌شده از کش دیسک به صفحه داده می‌شوند (آدرس مجازی mt.local)
                 override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                     val u = request.url
@@ -218,7 +269,15 @@ fun WebReaderScreen(onBack: () -> Unit) {
         topBar = {
             TopAppBar(
                 title = { Text("خواندن چپتر از وب") },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, null) } }
+                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, null) } },
+                actions = {
+                    TextButton(onClick = {
+                        desktopMode = !desktopMode
+                        webView.settings.userAgentString = if (desktopMode) desktopUa else mobileUa
+                        webView.reload()
+                    }) { Text(if (desktopMode) "موبایل" else "دسکتاپ") }
+                    IconButton(onClick = { webView.reload() }) { Icon(Icons.Filled.Refresh, "بارگذاری مجدد") }
+                }
             )
         },
         bottomBar = {
