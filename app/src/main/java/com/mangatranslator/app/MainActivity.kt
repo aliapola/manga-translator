@@ -7,7 +7,6 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.lifecycle.lifecycleScope
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.AlertDialog
@@ -22,20 +21,14 @@ import androidx.core.content.ContextCompat
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import com.mangatranslator.app.data.SettingsStore
 import com.mangatranslator.app.service.OverlayService
 import com.mangatranslator.app.service.ScreenCaptureService
-import com.mangatranslator.app.translation.LanguagePackManager
 import com.mangatranslator.app.ui.screens.HomeScreen
-import com.mangatranslator.app.ui.screens.LanguagePackScreen
 import com.mangatranslator.app.ui.screens.SettingsScreen
+import com.mangatranslator.app.ui.screens.WebReaderScreen
 import com.mangatranslator.app.ui.theme.MangaTranslatorTheme
-import com.mangatranslator.app.util.AppLogger
 import com.mangatranslator.app.util.CrashHandler
-import com.mangatranslator.app.util.NetworkUtils
 import com.mangatranslator.app.util.Permissions
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -65,8 +58,6 @@ class MainActivity : ComponentActivity() {
         if (Permissions.needsNotificationPermission()) {
             requestNotificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         }
-
-        autoDownloadLanguagePacksIfNeeded()
 
         setContent {
             MangaTranslatorTheme {
@@ -110,45 +101,13 @@ class MainActivity : ComponentActivity() {
                             sessionActive = isSessionActive.value,
                             onStartSession = ::startTranslationSession,
                             onStopSession = ::stopTranslationSession,
-                            onOpenLanguagePacks = { navController.navigate("packs") },
+                            onOpenWebReader = { navController.navigate("web") },
                             onOpenSettings = { navController.navigate("settings") }
                         )
                     }
-                    composable("packs") { LanguagePackScreen(onBack = { navController.popBackStack() }) }
+                    composable("web") { WebReaderScreen(onBack = { navController.popBackStack() }) }
                     composable("settings") { SettingsScreen(onBack = { navController.popBackStack() }) }
                 }
-            }
-        }
-    }
-
-    /**
-     * Downloads the currently-selected source language pack + Persian in the
-     * background on launch, if connected and not already downloaded. This
-     * means most users never have to open "Language Packs" manually - the
-     * offline model is just ready by the time they need it. Silent: no
-     * toast/dialog, since it's a one-time convenience, not something that
-     * should interrupt the user; if it fails (no connectivity yet), the app
-     * still works exactly as before - the user can always download manually.
-     */
-    private fun autoDownloadLanguagePacksIfNeeded() {
-        lifecycleScope.launch {
-            try {
-                if (!NetworkUtils.isOnline(this@MainActivity)) return@launch
-                val manager = LanguagePackManager()
-                val sourceLang = SettingsStore.sourceLangFlow(this@MainActivity).first()
-                val targetLang = manager.targetLanguage
-
-                if (!manager.isPackReady(sourceLang)) {
-                    AppLogger.log(this@MainActivity, "MainActivity", "Auto-downloading source language pack: $sourceLang")
-                    manager.downloadPack(sourceLang, requireWifi = false)
-                }
-                if (!manager.isPackReady(targetLang)) {
-                    AppLogger.log(this@MainActivity, "MainActivity", "Auto-downloading target language pack: $targetLang")
-                    manager.downloadPack(targetLang, requireWifi = false)
-                }
-            } catch (e: Exception) {
-                AppLogger.error(this@MainActivity, "MainActivity", "Auto-download of language packs failed", e)
-                // Non-fatal: the user can still download manually from "Language Packs".
             }
         }
     }

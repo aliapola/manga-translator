@@ -6,7 +6,6 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
-import android.media.Image
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
@@ -18,9 +17,7 @@ import com.mangatranslator.app.MyApplication
 import com.mangatranslator.app.R
 import com.mangatranslator.app.util.AppLogger
 import com.mangatranslator.app.util.CrashHandler
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
 
 /**
  * Foreground service that holds the MediaProjection instance for the
@@ -137,9 +134,6 @@ class ScreenCaptureService : Service() {
      * right after the user taps the floating button), a new frame may not
      * have been produced yet, so a single acquireLatestImage() attempt can
      * come back empty even though everything is working correctly.
-     *
-     * Runs on a background dispatcher: copying a full-screen frame into a
-     * Bitmap must not block the UI thread.
      */
     suspend fun captureFrame(): Bitmap? {
         val reader = imageReader
@@ -148,46 +142,37 @@ class ScreenCaptureService : Service() {
             return null
         }
 
-        return withContext(Dispatchers.Default) {
-            for (attempt in 1..MAX_CAPTURE_ATTEMPTS) {
-                val bitmap = tryAcquireImage(reader)
-                if (bitmap != null) {
-                    AppLogger.log(this@ScreenCaptureService, TAG, "captureFrame: got a frame on attempt $attempt/$MAX_CAPTURE_ATTEMPTS")
-                    return@withContext bitmap
-                }
-                delay(CAPTURE_RETRY_DELAY_MS)
+        repeat(MAX_CAPTURE_ATTEMPTS) { attempt ->
+            val bitmap = tryAcquireImage(reader)
+            if (bitmap != null) {
+                AppLogger.log(this, TAG, "captureFrame: got a frame on attempt ${attempt + 1}/$MAX_CAPTURE_ATTEMPTS")
+                return bitmap
             }
-            AppLogger.error(this@ScreenCaptureService, TAG, "captureFrame: no frame available after $MAX_CAPTURE_ATTEMPTS attempts")
-            null
+            delay(CAPTURE_RETRY_DELAY_MS)
         }
+        AppLogger.error(this, TAG, "captureFrame: no frame available after $MAX_CAPTURE_ATTEMPTS attempts")
+        return null
     }
 
     private fun tryAcquireImage(reader: ImageReader): Bitmap? {
-        var image: Image? = null
         return try {
-            image = reader.acquireLatestImage() ?: return null
-            val plane = image.planes[0]
-            val buffer = plane.buffer
-            val pixelStride = plane.pixelStride
-            val rowPadding = plane.rowStride - pixelStride * width
+            val image = reader.acquireLatestImage() ?: return null
+            val planes = image.planes
+            val buffer = planes[0].buffer
+            val pixelStride = planes[0].pixelStride
+            val rowStride = planes[0].rowStride
+            val rowPadding = rowStride - pixelStride * width
 
-            if (rowPadding == 0) {
-                // Common case: rows are tightly packed, so one allocation/copy is enough.
-                val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                bitmap.copyPixelsFromBuffer(buffer)
-                bitmap
-            } else {
-                val padded = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888)
-                padded.copyPixelsFromBuffer(buffer)
-                val cropped = Bitmap.createBitmap(padded, 0, 0, width, height)
-                padded.recycle()
-                cropped
-            }
+            val bitmap = Bitmap.createBitmap(
+                width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888
+            )
+            bitmap.copyPixelsFromBuffer(buffer)
+            image.close()
+
+            Bitmap.createBitmap(bitmap, 0, 0, width, height)
         } catch (e: Exception) {
             AppLogger.error(this, TAG, "captureFrame: exception while reading image buffer", e)
             null
-        } finally {
-            image?.close()
         }
     }
 
@@ -212,8 +197,8 @@ class ScreenCaptureService : Service() {
         const val EXTRA_RESULT_DATA = "extra_result_data"
         private const val NOTIFICATION_ID = 1001
         private const val TAG = "ScreenCaptureService"
-        private const val MAX_CAPTURE_ATTEMPTS = 20
-        private const val CAPTURE_RETRY_DELAY_MS = 25L
+        private const val MAX_CAPTURE_ATTEMPTS = 6
+        private const val CAPTURE_RETRY_DELAY_MS = 120L
         // Activity.RESULT_CANCELED == 0, duplicated here to avoid an Activity import in a Service file.
         private const val Activity_RESULT_CANCELED = 0
     }

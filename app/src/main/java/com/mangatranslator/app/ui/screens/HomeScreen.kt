@@ -4,7 +4,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.*
@@ -19,11 +19,11 @@ fun HomeScreen(
     sessionActive: Boolean,
     onStartSession: () -> Unit,
     onStopSession: () -> Unit,
-    onOpenLanguagePacks: () -> Unit,
+    onOpenWebReader: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
     Scaffold(
-        topBar = { TopAppBar(title = { Text("مترجم آفلاین مانگا") }) }
+        topBar = { TopAppBar(title = { Text("مترجم مانگا") }) }
     ) { padding ->
         Column(
             modifier = Modifier
@@ -70,12 +70,12 @@ fun HomeScreen(
             Spacer(Modifier.height(16.dp))
 
             OutlinedButton(
-                onClick = onOpenLanguagePacks,
+                onClick = onOpenWebReader,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Icon(Icons.Filled.MenuBook, contentDescription = null)
+                Icon(Icons.Filled.Language, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text("مدیریت بسته‌های زبان آفلاین")
+                Text("خواندن چپتر از وب (ترجمه کامل)")
             }
 
             Spacer(Modifier.height(12.dp))
@@ -92,7 +92,7 @@ fun HomeScreen(
             Spacer(Modifier.height(24.dp))
 
             Text(
-                text = "نکته: ترجمه آنلاین (در تنظیمات) سریع‌تر است؛ اگر خاموش باشد یا اینترنت نباشد، از مدل آفلاین دانلودشده استفاده می‌شود.",
+                text = "نکته: ترجمه با سرویس MyMemory انجام می‌شود و نیاز به اینترنت دارد؛ ترجمه‌های تکراری از حافظه‌ی گوشی خوانده می‌شوند.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center

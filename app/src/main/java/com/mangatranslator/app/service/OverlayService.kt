@@ -7,7 +7,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.os.Build
@@ -22,26 +24,21 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
-import com.google.mlkit.nl.translate.TranslateLanguage
 import com.mangatranslator.app.MyApplication
 import com.mangatranslator.app.R
 import com.mangatranslator.app.data.SettingsStore
 import com.mangatranslator.app.ocr.OcrProcessor
+import com.mangatranslator.app.render.BubbleRenderer
 import com.mangatranslator.app.ocr.OcrScript
-import com.mangatranslator.app.ocr.RecognizedBlock
-import com.mangatranslator.app.translation.LanguagePackManager
+import com.mangatranslator.app.translation.Lang
 import com.mangatranslator.app.translation.TranslationManager
-import com.mangatranslator.app.translation.TranslationResult
-import com.mangatranslator.app.translation.TranslationSource
 import com.mangatranslator.app.util.AppLogger
 import com.mangatranslator.app.util.CrashHandler
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -72,26 +69,25 @@ private fun WindowManager.safeRemoveView(view: View) {
 /**
  * Owns:
  *  - the floating draggable button shown over every app
- *  - the "result overlay": a full-screen frozen screenshot of the page with
- *    a [TranslationLayerView] on top that draws each translation at its
- *    bubble's exact position
+ *  - the "result overlay": a full-screen static image (the captured
+ *    screenshot with translated text drawn directly onto it at each
+ *    bubble's exact position)
  *
  * Talks to [ScreenCaptureService] (bound) to grab a frame, then runs
  * OCR + translation and renders the result.
  *
- * Speed design:
- *  - capture / OCR / translation / text layout all run on background threads;
- *    the UI thread only attaches views and draws.
- *  - all text blocks are translated in parallel (identical texts only once)
- *    and each translation is drawn the moment it is ready, instead of
- *    waiting for the slowest block.
- *  - OCR and the offline model are warmed up when the service starts.
- *  - nothing is copied or re-encoded: the captured bitmap is shown directly.
- *
- * Positioning note: the screenshot ImageView and the translation layer are
- * the same size and use the same screenshot->view scale (FIT_XY), so the
- * text and the bubble it belongs to can never drift apart, regardless of
- * how the OEM treats overlay-window insets.
+ * IMPORTANT positioning note: earlier versions positioned individual
+ * transparent TextViews inside the overlay window using OCR pixel
+ * coordinates as margins. That depends on the overlay window's own
+ * coordinate space exactly matching the captured screenshot's coordinate
+ * space - on some devices/OEM ROMs the system applies extra insets/limits
+ * to SYSTEM_ALERT_WINDOW-type windows that aren't fully predictable from
+ * app code, which caused translations to render off-position no matter how
+ * precisely the window's flags/size were tuned. Drawing the text directly
+ * onto a copy of the screenshot bitmap sidesteps that entirely: the text
+ * and the bubble it belongs to are now permanently part of the same image,
+ * so they can never drift apart - only the whole image as a unit could
+ * shift, which is not what users were reporting.
  */
 class OverlayService : Service() {
 
@@ -100,8 +96,6 @@ class OverlayService : Service() {
     private var floatingButtonParams: WindowManager.LayoutParams? = null
     private var resultContainer: FrameLayout? = null
     private var resultParams: WindowManager.LayoutParams? = null
-    private var resultLayer: TranslationLayerView? = null
-    private var hasResults = false
 
     private var captureService: ScreenCaptureService? = null
     private var bound = false
@@ -109,58 +103,44 @@ class OverlayService : Service() {
     private val serviceJob = Job()
     private val scope = CoroutineScope(Dispatchers.Main + serviceJob)
 
-    /** The single in-flight capture->OCR->translate->render pass (manual, region or auto). */
-    private var cycleJob: Job? = null
-
     private val ocrProcessor = OcrProcessor()
     private lateinit var translationManager: TranslationManager
 
     // Defaults to English source -> Persian target; actual value is re-read
     // from SettingsStore before every translation (see refreshSettings()).
     var sourceScript: OcrScript = OcrScript.LATIN
-    var sourceLangCode: String = TranslateLanguage.ENGLISH
-    val targetLangCode: String = TranslateLanguage.PERSIAN
+    var sourceLangCode: String = Lang.ENGLISH
+    val targetLangCode: String = Lang.PERSIAN
 
     private var overlayOpacity: Float = SettingsStore.DEFAULT_OVERLAY_OPACITY
     private var buttonSizeDp: Int = SettingsStore.DEFAULT_BUTTON_SIZE_DP
 
     private fun ocrScriptForLangCode(code: String): OcrScript = when (code) {
-        TranslateLanguage.JAPANESE -> OcrScript.JAPANESE
-        TranslateLanguage.KOREAN -> OcrScript.KOREAN
-        TranslateLanguage.CHINESE -> OcrScript.CHINESE
+        Lang.JAPANESE -> OcrScript.JAPANESE
+        Lang.KOREAN -> OcrScript.KOREAN
+        Lang.CHINESE -> OcrScript.CHINESE
         else -> OcrScript.LATIN
     }
 
-    /** Re-reads Settings (one DataStore access) so changes take effect immediately. */
+    /** Re-reads Settings so changes (source language, button size, opacity, email) take effect immediately. */
     private suspend fun refreshSettings() {
-        val settings = SettingsStore.snapshot(applicationContext)
-        if (settings.sourceLang != sourceLangCode) {
-            AppLogger.log(this, TAG, "Source language changed: $sourceLangCode -> ${settings.sourceLang}")
+        val code = SettingsStore.sourceLangFlow(applicationContext).first()
+        if (code != sourceLangCode) {
+            AppLogger.log(this, TAG, "Source language changed: $sourceLangCode -> $code")
         }
-        sourceLangCode = settings.sourceLang
-        sourceScript = ocrScriptForLangCode(settings.sourceLang)
-        overlayOpacity = settings.overlayOpacity
+        sourceLangCode = code
+        sourceScript = ocrScriptForLangCode(code)
 
-        if (settings.buttonSizeDp != buttonSizeDp) {
-            buttonSizeDp = settings.buttonSizeDp
+        overlayOpacity = SettingsStore.overlayOpacityFlow(applicationContext).first()
+
+        val newSize = SettingsStore.buttonSizeDpFlow(applicationContext).first()
+        if (newSize != buttonSizeDp) {
+            buttonSizeDp = newSize
             applyButtonSize()
         }
 
-        translationManager.updateOnlineConfig(
-            settings.onlineProvider, settings.myMemoryEmail, settings.geminiApiKey, settings.geminiModel
-        )
-    }
-
-    /** Loads the OCR model (and the offline translator, when it's the primary path) before the first tap. */
-    private suspend fun warmUp() {
-        val script = sourceScript
-        val source = sourceLangCode
-        val target = targetLangCode
-        coroutineScope {
-            launch(Dispatchers.Default) { ocrProcessor.warmUp(script) }
-            launch(Dispatchers.Default) { translationManager.warmUp(source, target) }
-        }
-        AppLogger.log(this@OverlayService, TAG, "Warm-up finished (script=$script)")
+        val myMemoryEmail = SettingsStore.myMemoryEmailFlow(applicationContext).first()
+        translationManager.updateConfig(myMemoryEmail)
     }
 
     private val connection = object : ServiceConnection {
@@ -180,7 +160,7 @@ class OverlayService : Service() {
         super.onCreate()
         try {
             windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            translationManager = TranslationManager(applicationContext, LanguagePackManager())
+            translationManager = TranslationManager(applicationContext)
 
             bindService(Intent(this, ScreenCaptureService::class.java), connection, Context.BIND_AUTO_CREATE)
             addFloatingButton()
@@ -190,7 +170,8 @@ class OverlayService : Service() {
 
             scope.launch {
                 refreshSettings()
-                warmUp()
+                // Speed: load the OCR model now so the first tap is not slow.
+                withContext(Dispatchers.Default) { ocrProcessor.prewarm(sourceScript) }
             }
 
             AppLogger.log(this, TAG, "OverlayService.onCreate finished successfully")
@@ -218,13 +199,12 @@ class OverlayService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    /** Periodically frees OCR/translation model memory after a few minutes of no activity. */
+    /** Periodically frees OCR model memory after a few minutes of no activity. */
     private fun startIdleReleaseLoop() {
         scope.launch {
             while (isActive) {
                 delay(IDLE_CHECK_INTERVAL_MS)
                 ocrProcessor.releaseIfIdle(IDLE_RELEASE_THRESHOLD_MS)
-                translationManager.releaseIfIdle(IDLE_RELEASE_THRESHOLD_MS)
             }
         }
     }
@@ -250,19 +230,13 @@ class OverlayService : Service() {
             while (isActive) {
                 delay(AUTO_TRANSLATE_POLL_INTERVAL_MS)
                 if (!bound || captureService == null) continue
-                // While a translation is running or its result is on screen there is
-                // nothing to detect (the screen is frozen) - skip the capture entirely.
-                if (hasResults || cycleJob?.isActive == true) continue
                 val bitmap = captureService?.captureFrame() ?: continue
-                val signature = withContext(Dispatchers.Default) { frameSignature(bitmap) }
+                val signature = frameSignature(bitmap)
                 val previous = lastFrameSignature
                 lastFrameSignature = signature
                 if (previous != null && kotlin.math.abs(signature - previous) > FRAME_CHANGE_THRESHOLD) {
                     AppLogger.log(this@OverlayService, TAG, "Auto-translate: page change detected")
-                    launchCycle {
-                        refreshSettings()
-                        runTranslationCycle(bitmap, region = null, silent = true)
-                    }
+                    runTranslationCycle(bitmap, region = null, silent = true)
                 }
             }
         }
@@ -418,223 +392,137 @@ class OverlayService : Service() {
         windowManager.safeUpdateViewLayout(container, params)
     }
 
-    /** Cancels any in-flight pass and starts a new one. */
-    private fun launchCycle(block: suspend CoroutineScope.() -> Unit) {
-        cycleJob?.cancel()
-        cycleJob = scope.launch(block = block)
-    }
-
     /** One-tap translate: capture -> OCR -> translate -> render. */
     private fun onFloatingButtonTapped() {
-        launchCycle {
-            // The alpha change also makes the display produce a fresh frame,
-            // which the (static-screen) capture below relies on.
+        scope.launch {
             floatingButton?.alpha = 0.4f
-            try {
-                val hadResults = hasResults
-                clearOverlay()
-                refreshSettings()
-                AppLogger.log(this@OverlayService, TAG, "Using source language: $sourceLangCode (script=$sourceScript)")
+            dismissResults()
+            refreshSettings()
+            AppLogger.log(this@OverlayService, TAG, "Using source language: $sourceLangCode (script=$sourceScript)")
 
-                if (!bound || captureService == null) {
-                    AppLogger.error(this@OverlayService, TAG, "Tap ignored: not yet bound to ScreenCaptureService")
-                    toast("در حال آماده‌سازی سرویس ضبط صفحه هستیم، چند ثانیه دیگر دوباره امتحان کنید")
-                    return@launchCycle
-                }
-
-                // If our own overlay was just removed, give the display a moment to
-                // compose a frame without it so it doesn't end up in the screenshot.
-                if (hadResults) delay(OVERLAY_REMOVAL_SETTLE_MS)
-
-                val startedAt = System.currentTimeMillis()
-                val bitmap = captureService?.captureFrame()
-                if (bitmap == null) {
-                    AppLogger.error(this@OverlayService, TAG, "Tap failed: captureFrame() returned null")
-                    toast("نتوانستیم از صفحه عکس بگیریم. دوباره تلاش کنید")
-                    return@launchCycle
-                }
-                AppLogger.log(this@OverlayService, TAG, "Timing: capture=${System.currentTimeMillis() - startedAt}ms")
-
-                runTranslationCycle(bitmap, region = null, silent = false)
-            } finally {
+            if (!bound || captureService == null) {
+                AppLogger.error(this@OverlayService, TAG, "Tap ignored: not yet bound to ScreenCaptureService")
+                toast("در حال آماده‌سازی سرویس ضبط صفحه هستیم، چند ثانیه دیگر دوباره امتحان کنید")
                 floatingButton?.alpha = 1f
+                return@launch
             }
+
+            val bitmap = captureService?.captureFrame()
+            if (bitmap == null) {
+                AppLogger.error(this@OverlayService, TAG, "Tap failed: captureFrame() returned null")
+                toast("نتوانستیم از صفحه عکس بگیریم. دوباره تلاش کنید")
+                floatingButton?.alpha = 1f
+                return@launch
+            }
+
+            runTranslationCycle(bitmap, region = null, silent = false)
+            floatingButton?.alpha = 1f
         }
     }
 
     /** Runs a single translate pass restricted to a user-picked screen region. */
     fun translateRegion(region: Rect) {
-        launchCycle {
-            clearOverlay()
+        scope.launch {
+            dismissResults()
             refreshSettings()
             val bitmap = captureService?.captureFrame()
             if (bitmap == null) {
                 AppLogger.error(this@OverlayService, TAG, "translateRegion: captureFrame() returned null")
                 toast("نتوانستیم از صفحه عکس بگیریم")
-                return@launchCycle
+                return@launch
             }
             runTranslationCycle(bitmap, region = region, silent = false)
         }
     }
 
-    private class BlockOutcome(
-        val block: RecognizedBlock,
-        val result: TranslationResult?,
-        val item: TranslationLayerView.Item?
-    )
-
     /**
      * Shared OCR -> translate -> render pipeline used by manual taps,
      * region-select, and the auto-translate loop. When [silent] is true
      * (background auto-translate), no Toast feedback is shown.
-     *
-     * Every distinct text is translated in parallel on a background thread;
-     * as soon as one finishes (and its text layout is computed) it is sent to
-     * the UI thread and drawn, so the first bubbles appear long before the
-     * slowest one is done.
      */
     private suspend fun runTranslationCycle(bitmap: Bitmap, region: Rect?, silent: Boolean) {
-        val script = sourceScript
-        val sourceLang = sourceLangCode
-        val targetLang = targetLangCode
-
-        val ocrStart = System.currentTimeMillis()
         val blocks = try {
-            withContext(Dispatchers.Default) { ocrProcessor.recognize(bitmap, script, region) }
-        } catch (e: CancellationException) {
-            throw e
+            ocrProcessor.recognize(bitmap, sourceScript, region)
         } catch (e: Exception) {
             AppLogger.error(this, TAG, "OCR failed", e)
             if (!silent) toast("خطا در تشخیص متن (OCR): ${e.message}")
             return
         }
-        val ocrMs = System.currentTimeMillis() - ocrStart
-        AppLogger.log(this, TAG, "OCR found ${blocks.size} text block(s) in ${ocrMs}ms")
+        AppLogger.log(this, TAG, "OCR found ${blocks.size} text block(s)")
 
         if (blocks.isEmpty()) {
             if (!silent) toast("هیچ متنی روی صفحه شناسایی نشد")
             return
         }
 
-        val translateStart = System.currentTimeMillis()
-
-        // Gemini mode: one request for the whole page (no-op for other providers).
-        try {
-            withContext(Dispatchers.Default) {
-                translationManager.prefetchBatch(blocks.map { it.text }, sourceLang, targetLang)
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            AppLogger.error(this, TAG, "prefetchBatch threw", e)
-        }
-
-        val outcomes = Channel<BlockOutcome>(Channel.UNLIMITED)
+        // Parallel translation with PROGRESSIVE rendering: every translation is
+        // drawn onto the screenshot the moment it arrives instead of waiting
+        // for the whole page.
+        val myCycle = ++cycleId
+        var annotated: Bitmap? = null
+        var annotatedCanvas: Canvas? = null
+        var imageView: ImageView? = null
         var shown = 0
-        var missingPack = false
-        var firstShownMs = -1L
 
-        coroutineScope {
-            // Identical texts (e.g. repeated sound effects) are translated once.
-            for ((text, group) in blocks.groupBy { it.text }) {
-                launch(Dispatchers.Default) {
-                    val result = try {
-                        translationManager.translate(text, sourceLang, targetLang)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        AppLogger.error(this@OverlayService, TAG, "translate() threw for block '$text'", e)
-                        null
-                    }
-                    for (block in group) {
-                        val item = try {
-                            if (result != null && result.translatedText.isNotBlank()) {
-                                TranslationLayerView.prepare(result.translatedText, block.boundingBox, bitmap.width, bitmap.height)
-                            } else null
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            AppLogger.error(this@OverlayService, TAG, "layout failed for block '$text'", e)
-                            null
+        val backgroundPaint = BubbleRenderer.backgroundPaint(overlayOpacity)
+
+        try {
+            translationManager.translateAll(blocks.map { it.text }, sourceLangCode, targetLangCode)
+                .collect { (index, translated) ->
+                    // Ignore late results from an old cycle (user dismissed / new tap).
+                    if (myCycle != cycleId || !scope.isActive) return@collect
+                    if (translated.isBlank()) return@collect
+                    val container = resultContainer ?: return@collect
+
+                    if (annotated == null) {
+                        annotated = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+                        annotatedCanvas = Canvas(annotated!!)
+                        imageView = ImageView(this).apply {
+                            setImageBitmap(annotated)
+                            scaleType = ImageView.ScaleType.FIT_XY
+                            isClickable = true
+                            setOnClickListener { dismissResults() }
                         }
-                        outcomes.send(BlockOutcome(block, result, item))
+                        container.removeAllViews()
+                        val (w, h) = realScreenSizePx()
+                        container.addView(imageView, FrameLayout.LayoutParams(w, h))
+                        setResultsTouchable(true)
                     }
-                }
-            }
 
-            // Runs on the UI thread: attach views / draw each result as it arrives.
-            repeat(blocks.size) {
-                val outcome = outcomes.receive()
-                val result = outcome.result
-                if (result != null) {
-                    AppLogger.log(
-                        this@OverlayService, TAG,
-                        "block='${outcome.block.text}' -> '${result.translatedText}' source=${result.source}"
+                    val box = blocks[index].boundingBox
+                    val bmp = annotated!!
+                    val safeBox = Rect(
+                        box.left.coerceIn(0, bmp.width),
+                        box.top.coerceIn(0, bmp.height),
+                        box.right.coerceIn(0, bmp.width),
+                        box.bottom.coerceIn(0, bmp.height)
                     )
-                    if (result.source == TranslationSource.NONE) missingPack = true
-                }
-                val item = outcome.item
-                if (item != null) {
-                    ensureResultViews(bitmap)?.add(item)
-                    if (shown == 0) firstShownMs = System.currentTimeMillis() - translateStart
+                    if (safeBox.width() <= 0 || safeBox.height() <= 0) return@collect
+                    BubbleRenderer.drawTranslation(annotatedCanvas!!, safeBox, translated, backgroundPaint)
+                    imageView?.invalidate()
                     shown++
+                    AppLogger.log(this, TAG, "block='${blocks[index].text}' -> '$translated'")
                 }
-            }
+        } catch (e: Exception) {
+            CrashHandler.recordManual(this, "runTranslationCycle", e)
+            AppLogger.error(this, TAG, "Translation cycle failed", e)
+            if (!silent) toast("خطا در ترجمه: ${e.message}")
+            return
         }
 
-        AppLogger.log(
-            this, TAG,
-            "Timing: ocr=${ocrMs}ms firstTranslation=${firstShownMs}ms allTranslations=${System.currentTimeMillis() - translateStart}ms shown=$shown/${blocks.size}"
-        )
-
-        if (shown == 0 && !silent) {
-            if (missingPack) {
-                toast("متن پیدا شد ولی ترجمه‌ای موجود نیست — بسته زبان را از «بسته‌های زبان آفلاین» دانلود کنید یا ترجمه آنلاین را در تنظیمات فعال کنید")
-            } else {
-                toast("متن پیدا شد ولی ترجمه‌ای برگردانده نشد")
-            }
+        if (shown == 0 && !silent && myCycle == cycleId) {
+            toast("متن پیدا شد ولی ترجمه‌ای برگردانده نشد — اینترنت یا سهمیه‌ی MyMemory را چک کنید")
         }
     }
 
-    /**
-     * Shows the frozen screenshot (no copy - the captured bitmap itself) with
-     * the translation layer on top. Created lazily when the first translation
-     * is ready; later calls return the same layer.
-     */
-    private fun ensureResultViews(source: Bitmap): TranslationLayerView? {
-        resultLayer?.let { return it }
-        val container = resultContainer ?: return null
+    /** Bumped on every new translation cycle and on dismiss, so stale async results are dropped. */
+    private var cycleId = 0
 
-        val imageView = ImageView(this).apply {
-            setImageBitmap(source)
-            scaleType = ImageView.ScaleType.FIT_XY
-            isClickable = true
-            setOnClickListener { dismissResults() }
-        }
-        val layer = TranslationLayerView(this, source.width, source.height, overlayOpacity)
-
-        val (screenWidthPx, screenHeightPx) = realScreenSizePx()
-        container.addView(imageView, FrameLayout.LayoutParams(screenWidthPx, screenHeightPx))
-        container.addView(layer, FrameLayout.LayoutParams(screenWidthPx, screenHeightPx))
-
-        resultLayer = layer
-        hasResults = true
-        setResultsTouchable(true)
-        return layer
-    }
-
-    /** Removes the result views and lets touches pass back through to the app underneath. */
-    private fun clearOverlay() {
-        resultContainer?.removeAllViews()
-        resultLayer = null
-        hasResults = false
-        setResultsTouchable(false)
-    }
-
-    /** Stops any in-flight translation and clears the result overlay. */
+    /** Clears the annotated screenshot AND lets touches pass back through to the app underneath. */
     fun dismissResults() {
-        cycleJob?.cancel()
-        clearOverlay()
+        cycleId++
+        resultContainer?.removeAllViews()
+        setResultsTouchable(false)
     }
 
     private fun toast(message: String) {
@@ -665,9 +553,8 @@ class OverlayService : Service() {
         private const val NOTIFICATION_ID = 1002
         private const val TAG = "OverlayService"
         private const val IDLE_CHECK_INTERVAL_MS = 60_000L
-        private const val IDLE_RELEASE_THRESHOLD_MS = 10 * 60_000L
+        private const val IDLE_RELEASE_THRESHOLD_MS = 3 * 60_000L
         private const val AUTO_TRANSLATE_POLL_INTERVAL_MS = 1_500L
         private const val FRAME_CHANGE_THRESHOLD = 12_000L
-        private const val OVERLAY_REMOVAL_SETTLE_MS = 60L
     }
 }

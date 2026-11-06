@@ -10,12 +10,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
-import com.google.mlkit.nl.translate.TranslateLanguage
-import com.mangatranslator.app.data.OnlineProvider
 import com.mangatranslator.app.data.SettingsStore
+import com.mangatranslator.app.translation.Lang
 import com.mangatranslator.app.util.AppLogger
 import com.mangatranslator.app.util.Permissions
 import kotlinx.coroutines.launch
@@ -23,10 +21,10 @@ import kotlinx.coroutines.launch
 private data class SourceLanguageOption(val code: String, val label: String)
 
 private val sourceLanguageOptions = listOf(
-    SourceLanguageOption(TranslateLanguage.JAPANESE, "ژاپنی (مانگا)"),
-    SourceLanguageOption(TranslateLanguage.KOREAN, "کره‌ای (مانهوا)"),
-    SourceLanguageOption(TranslateLanguage.CHINESE, "چینی (مانهوا/مانهوآ)"),
-    SourceLanguageOption(TranslateLanguage.ENGLISH, "انگلیسی")
+    SourceLanguageOption(Lang.JAPANESE, "ژاپنی (مانگا)"),
+    SourceLanguageOption(Lang.KOREAN, "کره‌ای (مانهوا)"),
+    SourceLanguageOption(Lang.CHINESE, "چینی (مانهوا/مانهوآ)"),
+    SourceLanguageOption(Lang.ENGLISH, "انگلیسی")
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -37,21 +35,15 @@ fun SettingsScreen(onBack: () -> Unit) {
     var showLogDialog by remember { mutableStateOf(false) }
 
     val currentSourceLang by SettingsStore.sourceLangFlow(context)
-        .collectAsState(initial = TranslateLanguage.ENGLISH)
+        .collectAsState(initial = Lang.ENGLISH)
     val autoTranslate by SettingsStore.autoTranslateFlow(context)
         .collectAsState(initial = false)
     val buttonSizeDp by SettingsStore.buttonSizeDpFlow(context)
         .collectAsState(initial = SettingsStore.DEFAULT_BUTTON_SIZE_DP)
     val overlayOpacity by SettingsStore.overlayOpacityFlow(context)
         .collectAsState(initial = SettingsStore.DEFAULT_OVERLAY_OPACITY)
-    val onlineProvider by SettingsStore.onlineProviderFlow(context)
-        .collectAsState(initial = SettingsStore.DEFAULT_ONLINE_PROVIDER)
     val myMemoryEmailStored by SettingsStore.myMemoryEmailFlow(context)
         .collectAsState(initial = "")
-    val geminiKeyStored by SettingsStore.geminiApiKeyFlow(context)
-        .collectAsState(initial = "")
-    val geminiModelStored by SettingsStore.geminiModelFlow(context)
-        .collectAsState(initial = SettingsStore.DEFAULT_GEMINI_MODEL)
 
     Scaffold(
         topBar = {
@@ -138,121 +130,33 @@ fun SettingsScreen(onBack: () -> Unit) {
             Divider()
             Spacer(Modifier.height(16.dp))
 
-            Text("ترجمه آنلاین (اختیاری)", style = MaterialTheme.typography.titleSmall)
+            Text("ترجمه (MyMemory)", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(4.dp))
             Text(
-                "برنامه به‌طور پیش‌فرض کاملاً آفلاین است. برای سرعت و کیفیت بیشتر می‌توانید از یکی از این سرویس‌های آنلاین استفاده کنید. اگر اینترنت نبود یا سرویس در دسترس نبود، خودکار به مدل آفلاین برمی‌گردد.",
+                "ترجمه فقط با سرویس رایگان MyMemory انجام می‌شود و نیاز به اینترنت دارد. ترجمه‌های قبلی روی گوشی ذخیره می‌شوند و دفعه‌ی بعد بدون اینترنت و فوری نمایش داده می‌شوند.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(Modifier.height(8.dp))
-
-            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                RadioButton(
-                    selected = onlineProvider == OnlineProvider.NONE,
-                    onClick = { scope.launch { SettingsStore.setOnlineProvider(context, OnlineProvider.NONE) } }
-                )
-                Text("خاموش (فقط آفلاین)")
-            }
-            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                RadioButton(
-                    selected = onlineProvider == OnlineProvider.MYMEMORY,
-                    onClick = { scope.launch { SettingsStore.setOnlineProvider(context, OnlineProvider.MYMEMORY) } }
-                )
-                Column {
-                    Text("MyMemory")
-                    Text(
-                        "رایگان، بدون کارت و بدون ثبت‌نام - کندتر و با سهمیه روزانه",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                RadioButton(
-                    selected = onlineProvider == OnlineProvider.GOOGLE_FREE,
-                    onClick = { scope.launch { SettingsStore.setOnlineProvider(context, OnlineProvider.GOOGLE_FREE) } }
-                )
-                Column {
-                    Text("Google Translate (بدون کلید)")
-                    Text(
-                        "رایگان، بدون کارت و بدون ثبت‌نام - سریع‌تر و باکیفیت‌تر از MyMemory",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                RadioButton(
-                    selected = onlineProvider == OnlineProvider.GEMINI,
-                    onClick = { scope.launch { SettingsStore.setOnlineProvider(context, OnlineProvider.GEMINI) } }
-                )
-                Column {
-                    Text("Google Gemini (محاوره‌ای)")
-                    Text(
-                        "ترجمه کل صفحه در یک درخواست، به فارسی محاوره‌ای و بدون سانسور - نیاز به کلید رایگان",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            if (onlineProvider == OnlineProvider.MYMEMORY) {
-                Spacer(Modifier.height(8.dp))
-                var emailField by remember(myMemoryEmailStored) { mutableStateOf(myMemoryEmailStored) }
-                OutlinedTextField(
-                    value = emailField,
-                    onValueChange = { emailField = it },
-                    label = { Text("ایمیل (اختیاری - سهمیه را از ۵۰۰۰ به ۵۰,۰۰۰ کلمه/روز می‌رساند)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = { scope.launch { SettingsStore.setMyMemoryEmail(context, emailField) } },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("ذخیره") }
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "این ایمیل فقط یک شناسه‌ی سهمیه است، نه ثبت‌نام واقعی؛ می‌توانید همین فیلد را خالی هم بگذارید و با سهمیه‌ی روزانه‌ی ۵۰۰۰ کلمه کار کنید.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            if (onlineProvider == OnlineProvider.GEMINI) {
-                Spacer(Modifier.height(8.dp))
-                var keyField by remember(geminiKeyStored) { mutableStateOf(geminiKeyStored) }
-                var modelField by remember(geminiModelStored) { mutableStateOf(geminiModelStored) }
-                OutlinedTextField(
-                    value = keyField,
-                    onValueChange = { keyField = it },
-                    label = { Text("کلید API جمینای (Gemini)") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = modelField,
-                    onValueChange = { modelField = it },
-                    label = { Text("نام مدل (پیش‌فرض ${SettingsStore.DEFAULT_GEMINI_MODEL})") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = { scope.launch { SettingsStore.setGemini(context, keyField, modelField) } },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("ذخیره کلید و مدل") }
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "راهنما: در aistudio.google.com/apikey با اکانت گوگل یک کلید رایگان بسازید. در لایه رایگان ممکن است گوگل از متن‌های ارسالی برای بهبود محصولاتش استفاده کند. اگر مدل پیش‌فرض دیگر وجود نداشت، یک مدل Flash جدیدتر را اینجا بنویسید. در صورت خطا یا محدودیت، موقتاً با Google Translate و سپس مدل آفلاین ترجمه می‌شود.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+            var emailField by remember(myMemoryEmailStored) { mutableStateOf(myMemoryEmailStored) }
+            OutlinedTextField(
+                value = emailField,
+                onValueChange = { emailField = it },
+                label = { Text("ایمیل (اختیاری - سهمیه را از ۵۰۰۰ به ۵۰,۰۰۰ کلمه/روز می‌رساند)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = { scope.launch { SettingsStore.setMyMemoryEmail(context, emailField) } },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("ذخیره") }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "این ایمیل فقط یک شناسه‌ی سهمیه است، نه ثبت‌نام واقعی؛ می‌توانید خالی بگذارید.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
 
             Spacer(Modifier.height(24.dp))
             Divider()

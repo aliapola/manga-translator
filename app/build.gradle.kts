@@ -70,8 +70,8 @@ dependencies {
     implementation("com.google.mlkit:text-recognition-japanese:16.0.1")
     implementation("com.google.mlkit:text-recognition-korean:16.0.1")
 
-    // ML Kit - On-device translation (fully offline once language packs are downloaded)
-    implementation("com.google.mlkit:translate:17.0.3")
+    // HTTP client for MyMemory (shared instance, Keep-Alive + HTTP/2)
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // Coroutines (play-services variant adds Task.await() used for ML Kit calls)
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")

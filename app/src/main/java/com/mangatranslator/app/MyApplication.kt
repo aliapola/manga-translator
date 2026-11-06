@@ -4,16 +4,12 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
-import com.mangatranslator.app.data.SettingsStore
 import com.mangatranslator.app.util.CrashHandler
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 
 /**
  * Application entry point.
- * Creates the notification channels required by the two foreground services
- * (capture + overlay).
+ * Creates the notification
+ * channels required by the two foreground services (capture + overlay).
  */
 class MyApplication : Application() {
 
@@ -26,23 +22,6 @@ class MyApplication : Application() {
         super.onCreate()
         CrashHandler.install(this)
         createNotificationChannels()
-        cleanUpRemovedFeatures()
-    }
-
-    /**
-     * One-off cleanup for data left behind by features that no longer exist:
-     * the custom-dictionary database and the stored Azure API key/region.
-     * Both calls are no-ops when there is nothing to remove.
-     */
-    private fun cleanUpRemovedFeatures() {
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                deleteDatabase("manga_translator.db")
-                SettingsStore.purgeLegacyKeys(this@MyApplication)
-            } catch (_: Exception) {
-                // Best-effort cleanup only.
-            }
-        }
     }
 
     private fun createNotificationChannels() {

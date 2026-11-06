@@ -1,246 +1,186 @@
 package com.mangatranslator.app.translation
 
 import android.content.Context
-import com.google.mlkit.nl.translate.TranslateLanguage
-import com.google.mlkit.nl.translate.Translation
-import com.google.mlkit.nl.translate.Translator
-import com.google.mlkit.nl.translate.TranslatorOptions
-import com.mangatranslator.app.data.OnlineProvider
+import android.content.SharedPreferences
+import android.util.LruCache
 import com.mangatranslator.app.util.AppLogger
 import com.mangatranslator.app.util.NetworkUtils
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.tasks.await
-import java.util.concurrent.ConcurrentHashMap
-
-enum class TranslationSource { OFFLINE_MODEL, ONLINE, CACHE, NONE }
-
-data class TranslationResult(
-    val originalText: String,
-    val translatedText: String,
-    val source: TranslationSource
-)
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
+import okhttp3.ConnectionPool
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Request
+import org.json.JSONObject
+import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
 
 /**
- * Core translation pipeline:
- * 1. Session cache: the exact same text is never translated twice.
- * 2. Optional online provider (Gemini / Google / MyMemory) - only if enabled, not in
- *    a failure cooldown, and the device is actually online.
- * 3. On-device ML Kit model as the fallback / offline path.
+ * ترجمه فقط با MyMemory.
  *
- * Safe to call from many coroutines at once (OverlayService translates all
- * text blocks of a page in parallel).
+ * بهینه‌سازی‌ها:
+ *  1. درخواست‌های موازی (حداکثر [MAX_PARALLEL] همزمان) - [translateAll]
+ *  2. کش دو‌سطحی: RAM (LruCache) + دیسک (SharedPreferences)
+ *  3. خروجی تدریجی: هر ترجمه به محض رسیدن از Flow بیرون می‌آید
+ *  4. فیلتر متن‌های بی‌ارزش (عدد، علامت، نویز OCR) و حذف متن‌های تکراری
+ *  5. یک OkHttpClient مشترک با Keep-Alive و HTTP/2
  */
-class TranslationManager(
-    private val context: Context,
-    private val languagePackManager: LanguagePackManager
-) {
-    private val translators = ConcurrentHashMap<String, Translator>()
-    @Volatile private var translatorsLastUsed = System.currentTimeMillis()
-    private val myMemoryClient = MyMemoryTranslatorClient()
-    private val googleFreeClient = GoogleFreeTranslatorClient()
-    private val geminiClient = GeminiTranslatorClient()
+class TranslationManager(private val context: Context) {
 
-    // Pushed in by OverlayService before each translation pass.
-    @Volatile private var onlineProvider = OnlineProvider.NONE
-    @Volatile private var myMemoryEmail = ""
-    @Volatile private var geminiApiKey = ""
-    @Volatile private var geminiModel = ""
+    /** ایمیل اختیاری MyMemory؛ سقف روزانه را از ۵٬۰۰۰ به ۵۰٬۰۰۰ کلمه می‌رساند. */
+    @Volatile var contactEmail: String = ""
 
-    // If the online provider fails once (unreachable, blocked, timed out),
-    // skip it for a short cooldown instead of paying a full timeout again
-    // for every remaining text block on the page.
-    @Volatile private var onlineCooldownUntil = 0L
-    @Volatile private var geminiCooldownUntil = 0L
+    private val memCache = LruCache<String, String>(1000)
+    private val diskCache: SharedPreferences =
+        context.applicationContext.getSharedPreferences("translation_cache_v1", Context.MODE_PRIVATE)
+    private val limiter = Semaphore(MAX_PARALLEL)
 
-    // "src>tgt" pairs whose language packs were already verified as downloaded.
-    // Asking ML Kit for the downloaded-model list is comparatively slow, and it
-    // used to be done twice for EVERY text block.
-    private val readyPairs = ConcurrentHashMap.newKeySet<String>()
-    private val readyMutex = Mutex()
+    // اگر MyMemory یک‌بار شکست خورد (قطعی/سهمیه)، مدتی دوباره تلاش نمی‌کنیم
+    @Volatile private var cooldownUntil = 0L
 
-    // Simple in-memory session cache: (sourceLang, targetLang, text) -> result (LRU).
-    private val cache = object : LinkedHashMap<String, TranslationResult>(64, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, TranslationResult>?): Boolean =
-            size > CACHE_MAX_ENTRIES
+    fun updateConfig(email: String) {
+        contactEmail = email
     }
 
-    fun updateOnlineConfig(
-        provider: OnlineProvider,
-        myMemoryEmail: String,
-        geminiApiKey: String,
-        geminiModel: String
-    ) {
-        this.onlineProvider = provider
-        this.myMemoryEmail = myMemoryEmail
-        this.geminiApiKey = geminiApiKey
-        this.geminiModel = geminiModel
+    /** فیلتر قبل از ارسال به API (مورد ۴). */
+    fun shouldTranslate(raw: String): Boolean {
+        val t = raw.trim()
+        if (t.length < 2) return false
+        if (!t.any { it.isLetter() }) return false                 // فقط عدد/علامت
+        if (t.length > 3 && t.toSet().size <= 2) return false      // «!!!!» «ッッッ» «…»
+        return true
+    }
+
+    private fun normalize(raw: String) = raw.replace(Regex("\\s+"), " ").trim()
+
+    private fun cacheKey(text: String, src: String, tgt: String): String {
+        val digest = MessageDigest.getInstance("MD5").digest("$src|$tgt|$text".toByteArray())
+        return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    /** ترجمه یک متن. null یعنی لازم نبود یا ناموفق بود. */
+    suspend fun translate(raw: String, sourceLang: String, targetLang: String = Lang.PERSIAN): String? {
+        if (!shouldTranslate(raw)) return null
+        val text = normalize(raw)
+        val key = cacheKey(text, sourceLang, targetLang)
+
+        memCache.get(key)?.let { return it }
+        diskCache.getString(key, null)?.let { memCache.put(key, it); return it }
+
+        if (System.currentTimeMillis() < cooldownUntil) return null
+        if (!NetworkUtils.isOnline(context)) {
+            AppLogger.error(context, TAG, "No network connection")
+            return null
+        }
+
+        val parts = chunk(text)
+        val translatedParts = ArrayList<String>(parts.size)
+        for (part in parts) {
+            val tr = limiter.withPermit { fetch(part, sourceLang, targetLang) }
+            if (tr == null) {
+                cooldownUntil = System.currentTimeMillis() + COOLDOWN_MS
+                AppLogger.error(context, TAG, "MyMemory failed for '$part'")
+                return null
+            }
+            translatedParts += tr
+        }
+        val result = translatedParts.joinToString(" ")
+        memCache.put(key, result)
+        diskCache.edit().putString(key, result).apply()
+        return result
     }
 
     /**
-     * Gemini mode only: translates ALL [texts] of a page in a single request and
-     * stores the results in the session cache, so the per-text [translate] calls
-     * that follow are instant cache hits. Anything that fails here (no key,
-     * quota, blocked, offline) is simply left uncached and handled by the normal
-     * per-text path (Google, then the offline model). No-op for other providers.
+     * ترجمه موازی همه متن‌ها (مورد ۱) با خروجی تدریجی (مورد ۳).
+     * هر عنصر خروجی: (اندیس متن در لیست ورودی، ترجمه).
+     * متن‌های تکراری فقط یک‌بار ترجمه می‌شوند.
      */
-    suspend fun prefetchBatch(
+    fun translateAll(
         texts: List<String>,
         sourceLang: String,
-        targetLang: String = TranslateLanguage.PERSIAN
-    ) {
-        if (onlineProvider != OnlineProvider.GEMINI || geminiApiKey.isBlank()) return
-        if (System.currentTimeMillis() < geminiCooldownUntil) return
-        if (!NetworkUtils.isOnline(context)) return
+        targetLang: String = Lang.PERSIAN
+    ): Flow<Pair<Int, String>> = channelFlow {
+        val groups = texts.withIndex()
+            .filter { shouldTranslate(it.value) }
+            .groupBy { normalize(it.value) }
 
-        val missing = texts.filter { it.isNotBlank() }.distinct().filter { text ->
-            synchronized(cache) { cache["$sourceLang|$targetLang|$text"] } == null
-        }
-        if (missing.isEmpty()) return
-
-        val translated = geminiClient.translateBatch(missing, sourceLang, targetLang, geminiApiKey, geminiModel)
-        if (translated == null) {
-            geminiCooldownUntil = System.currentTimeMillis() + ONLINE_COOLDOWN_MS
-            AppLogger.error(context, TAG, "Gemini batch failed (key/model/quota/blocked?) - falling back to Google/offline for ${ONLINE_COOLDOWN_MS}ms")
-            return
-        }
-        synchronized(cache) {
-            missing.forEachIndexed { index, original ->
-                val result = translated[index]
-                if (result.isNotBlank()) {
-                    cache["$sourceLang|$targetLang|$original"] =
-                        TranslationResult(original, result, TranslationSource.ONLINE)
+        for ((text, items) in groups) {
+            launch(Dispatchers.IO) {
+                val tr = try {
+                    translate(text, sourceLang, targetLang)
+                } catch (e: Exception) {
+                    AppLogger.error(context, TAG, "translate() threw for '$text'", e)
+                    null
                 }
+                if (tr != null) items.forEach { send(it.index to tr) }
             }
         }
     }
 
-    private fun pairKey(sourceLang: String, targetLang: String) = "$sourceLang>$targetLang"
-
-    private fun translatorFor(sourceLang: String, targetLang: String): Translator {
-        translatorsLastUsed = System.currentTimeMillis()
-        return translators.computeIfAbsent(pairKey(sourceLang, targetLang)) {
-            val options = TranslatorOptions.Builder()
-                .setSourceLanguage(sourceLang)
-                .setTargetLanguage(targetLang)
-                .build()
-            Translation.getClient(options)
-        }
-    }
-
-    private suspend fun packsReady(sourceLang: String, targetLang: String): Boolean {
-        val key = pairKey(sourceLang, targetLang)
-        if (key in readyPairs) return true
-        return readyMutex.withLock {
-            if (key in readyPairs) return@withLock true
-            val ready = languagePackManager.areReady(listOf(sourceLang, targetLang))
-            if (ready) readyPairs.add(key)
-            ready
-        }
-    }
-
-    /**
-     * Loads the offline model into memory ahead of the first tap. Skipped when
-     * an online provider is enabled (the offline model is then only a fallback
-     * and keeping it resident would just cost RAM).
-     */
-    suspend fun warmUp(sourceLang: String, targetLang: String = TranslateLanguage.PERSIAN) {
-        if (onlineProvider != OnlineProvider.NONE) return
-        try {
-            if (!packsReady(sourceLang, targetLang)) return
-            translatorFor(sourceLang, targetLang).translate("OK").await()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            AppLogger.log(context, TAG, "warmUp skipped: ${e.message}")
-        }
-    }
-
-    suspend fun translate(
-        text: String,
-        sourceLang: String,
-        targetLang: String = TranslateLanguage.PERSIAN
-    ): TranslationResult {
-        if (text.isBlank()) return TranslationResult(text, "", TranslationSource.NONE)
-
-        val cacheKey = "$sourceLang|$targetLang|$text"
-        synchronized(cache) { cache[cacheKey] }?.let { return it.copy(source = TranslationSource.CACHE) }
-
-        val result = translateUncached(text, sourceLang, targetLang)
-        if (result.translatedText.isNotBlank()) {
-            synchronized(cache) { cache[cacheKey] = result }
-        }
-        return result
-    }
-
-    private suspend fun translateUncached(
-        text: String,
-        sourceLang: String,
-        targetLang: String
-    ): TranslationResult {
-        tryOnline(text, sourceLang, targetLang)?.let {
-            return TranslationResult(text, it, TranslationSource.ONLINE)
+    private suspend fun fetch(q: String, src: String, tgt: String): String? =
+        withContext(Dispatchers.IO) {
+            try {
+                val url = "https://api.mymemory.translated.net/get".toHttpUrl().newBuilder()
+                    .addQueryParameter("q", q)
+                    .addQueryParameter("langpair", "${Lang.forMyMemory(src)}|${Lang.forMyMemory(tgt)}")
+                    .apply { if (contactEmail.isNotBlank()) addQueryParameter("de", contactEmail) }
+                    .build()
+                client.newCall(Request.Builder().url(url).build()).execute().use { r ->
+                    if (!r.isSuccessful) return@use null
+                    val body = r.body?.string() ?: return@use null
+                    val json = JSONObject(body)
+                    if (json.optInt("responseStatus", 200) != 200) return@use null
+                    val tr = json.getJSONObject("responseData").getString("translatedText")
+                    // وقتی سهمیه تمام شود MyMemory به‌جای خطا یک متن هشدار برمی‌گرداند
+                    if (tr.contains("MYMEMORY WARNING", ignoreCase = true)) null else tr
+                }
+            } catch (e: Exception) {
+                null
+            }
         }
 
-        if (!packsReady(sourceLang, targetLang)) {
-            return TranslationResult(text, "", TranslationSource.NONE)
+    /** متن‌های بلند را سر جمله/فاصله می‌شکند (سقف MyMemory حدود ۵۰۰ بایت است). */
+    private fun chunk(text: String): List<String> {
+        if (text.length <= MAX_CHARS) return listOf(text)
+        val out = mutableListOf<String>()
+        var rest = text
+        while (rest.length > MAX_CHARS) {
+            var cut = rest.lastIndexOfAny(charArrayOf('.', '!', '?', '。', '！', '？'), MAX_CHARS)
+            if (cut < 50) cut = rest.lastIndexOf(' ', MAX_CHARS)
+            if (cut < 50) cut = MAX_CHARS
+            out += rest.substring(0, cut + 1).trim()
+            rest = rest.substring(cut + 1).trim()
         }
-
-        return try {
-            val translated = translatorFor(sourceLang, targetLang).translate(text).await()
-            TranslationResult(text, translated, TranslationSource.OFFLINE_MODEL)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            // Pack may have been deleted meanwhile: re-verify next time.
-            readyPairs.remove(pairKey(sourceLang, targetLang))
-            AppLogger.error(context, TAG, "Offline translation failed for '$text'", e)
-            TranslationResult(text, "", TranslationSource.NONE)
-        }
-    }
-
-    /** Returns the online translation, or null if online is off/unavailable/failed (caller falls back to offline). */
-    private suspend fun tryOnline(text: String, sourceLang: String, targetLang: String): String? {
-        val provider = onlineProvider
-        if (provider == OnlineProvider.NONE) return null
-        if (System.currentTimeMillis() < onlineCooldownUntil) return null
-        if (!NetworkUtils.isOnline(context)) return null
-
-        val translated = when (provider) {
-            OnlineProvider.MYMEMORY -> myMemoryClient.translate(text, sourceLang, targetLang, myMemoryEmail)
-            OnlineProvider.GOOGLE_FREE -> googleFreeClient.translate(text, sourceLang, targetLang)
-            // Gemini translates whole pages via prefetchBatch(); this single-text path is
-            // only reached when that batch failed, so use Google as the fallback.
-            OnlineProvider.GEMINI -> googleFreeClient.translate(text, sourceLang, targetLang)
-            OnlineProvider.NONE -> null
-        }
-        if (!translated.isNullOrBlank()) return translated
-
-        // Failed (blocked/unreachable endpoint, rate limit, timeout...). Start a
-        // cooldown so the REST of this page's blocks skip straight to the
-        // offline model instead of each waiting out a full timeout.
-        onlineCooldownUntil = System.currentTimeMillis() + ONLINE_COOLDOWN_MS
-        AppLogger.error(context, TAG, "Online ($provider) failed - cooling down ${ONLINE_COOLDOWN_MS}ms, falling back to offline")
-        return null
-    }
-
-    fun releaseIfIdle(idleMillis: Long) {
-        if (translators.isNotEmpty() && System.currentTimeMillis() - translatorsLastUsed > idleMillis) {
-            translators.values.forEach { it.close() }
-            translators.clear()
-        }
+        if (rest.isNotEmpty()) out += rest
+        return out
     }
 
     fun close() {
-        translators.values.forEach { it.close() }
-        translators.clear()
-        synchronized(cache) { cache.clear() }
+        memCache.evictAll()
     }
 
     companion object {
         private const val TAG = "TranslationManager"
-        private const val CACHE_MAX_ENTRIES = 500
-        private const val ONLINE_COOLDOWN_MS = 20_000L
+        private const val MAX_CHARS = 450
+        private const val MAX_PARALLEL = 6
+        private const val COOLDOWN_MS = 15_000L
+
+        // مورد ۵: یک کلاینت مشترک برای کل برنامه (Keep-Alive + HTTP/2)
+        private val client: OkHttpClient by lazy {
+            OkHttpClient.Builder()
+                .protocols(listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))
+                .connectionPool(ConnectionPool(8, 5, TimeUnit.MINUTES))
+                .connectTimeout(5, TimeUnit.SECONDS)
+                .readTimeout(8, TimeUnit.SECONDS)
+                .callTimeout(12, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(true)
+                .build()
+        }
     }
 }
