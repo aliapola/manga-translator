@@ -18,6 +18,9 @@ import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.zIndex
+import android.view.ViewGroup
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
@@ -67,6 +70,19 @@ import java.io.FileInputStream
 import kotlin.coroutines.resume
 
 private const val TAG = "WebReader"
+private const val WELCOME_HTML = """
+<html dir="rtl"><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{font-family:sans-serif;margin:0;padding:28px;background:#fff;color:#222;line-height:1.9}
+h2{margin-top:8px}li{margin:6px 0}</style></head><body>
+<h2>مترجم چپتر</h2>
+<ol>
+<li>آدرس چپتر را در نوار بالا وارد یا paste کنید و دکمه جستجو را بزنید.</li>
+<li>صبر کنید صفحه کامل باز شود.</li>
+<li>دکمه «ترجمه چپتر» پایین صفحه را بزنید.</li>
+</ol>
+<p style="color:#777">اگر فقط یک کلمه بنویسید، در گوگل جستجو می‌شود.</p>
+</body></html>
+"""
 private val SAFE_NAME = Regex("[0-9a-f]{32}\\.jpg")
 
 /** اجرای جاوااسکریپت و برگرداندن نتیجه رشته‌ای (باید روی Main صدا زده شود). */
@@ -192,6 +208,7 @@ fun WebReaderScreen(onBack: () -> Unit) {
                 }
 
                 override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
+                    if (url.startsWith("about:") || url.startsWith("data:")) return   // صفحه خوش‌آمد
                     job?.cancel()
                     running = false
                     total = 0; done = 0; failed = 0; translatedCount = 0
@@ -204,6 +221,7 @@ fun WebReaderScreen(onBack: () -> Unit) {
                 }
 
                 override fun onPageFinished(view: WebView, url: String) {
+                    if (url.startsWith("about:") || url.startsWith("data:")) return
                     if (adBlockFlag.get()) view.evaluateJavascript(AdBlocker.COSMETIC_JS, null)
                     status = "صفحه آماده است. برای ترجمه همه تصاویر چپتر، دکمه پایین را بزنید."
                 }
@@ -221,15 +239,26 @@ fun WebReaderScreen(onBack: () -> Unit) {
         }
     }
 
+    LaunchedEffect(Unit) {
+        // یک بار یک صفحه اولیه بارگذاری می‌شود تا WebView از همان ابتدا درست رسم شود
+        webView.loadDataWithBaseURL(null, WELCOME_HTML, "text/html", "utf-8", null)
+    }
+
     BackHandler {
         if (webView.canGoBack()) webView.goBack() else onBack()
     }
 
     fun loadUrl() {
-        var u = urlField.trim()
-        if (u.isEmpty()) return
-        if (!u.startsWith("http://") && !u.startsWith("https://")) u = "https://$u"
-        webView.loadUrl(u)
+        val input = urlField.trim()
+        if (input.isEmpty()) return
+        val target = when {
+            input.startsWith("http://") || input.startsWith("https://") -> input
+            // یک کلمه/جمله بدون نقطه یا با فاصله → جستجوی گوگل (نه آدرس)
+            input.contains(' ') || !input.contains('.') ->
+                "https://www.google.com/search?q=" + android.net.Uri.encode(input)
+            else -> "https://$input"
+        }
+        webView.loadUrl(target)
     }
 
     fun startTranslate() {
@@ -313,7 +342,12 @@ fun WebReaderScreen(onBack: () -> Unit) {
         // ── هدر فشرده: برگشت | فیلد آدرس | چسباندن | برو | منو ──
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth().height(46.dp).padding(horizontal = 2.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .zIndex(1f)
+                .background(MaterialTheme.colorScheme.surface)
+                .height(46.dp)
+                .padding(horizontal = 2.dp)
         ) {
             IconButton(onClick = onBack, modifier = Modifier.size(40.dp)) {
                 Icon(Icons.Filled.ArrowBack, contentDescription = "بازگشت")
@@ -390,8 +424,18 @@ fun WebReaderScreen(onBack: () -> Unit) {
         }
 
         // ── صفحه وب ──
-        Box(Modifier.weight(1f).fillMaxWidth()) {
-            AndroidView(factory = { webView }, modifier = Modifier.fillMaxSize())
+        Box(Modifier.weight(1f).fillMaxWidth().clipToBounds()) {
+            AndroidView(
+                factory = {
+                    webView.apply {
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
         }
 
         // ── نوار پایین فشرده ──
