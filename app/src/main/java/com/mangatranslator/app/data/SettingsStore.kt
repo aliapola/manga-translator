@@ -25,6 +25,7 @@ object SettingsStore {
     private val KEY_AUTO_TRANSLATE = booleanPreferencesKey("auto_translate_on_page_change")
     private val KEY_MYMEMORY_EMAIL = stringPreferencesKey("mymemory_contact_email")
     private val KEY_COLLOQUIAL = booleanPreferencesKey("colloquial_persian")
+    private val KEY_ADBLOCK = booleanPreferencesKey("web_adblock")
 
     const val DEFAULT_BUTTON_SIZE_DP = 56
     const val MIN_BUTTON_SIZE_DP = 36
@@ -98,5 +99,13 @@ object SettingsStore {
         context.applicationContext.dataStore.edit { prefs ->
             prefs[KEY_COLLOQUIAL] = enabled
         }
+    }
+
+    /** حذف تبلیغات در وب‌ریدر (پیش‌فرض: روشن). */
+    fun adBlockFlow(context: Context): Flow<Boolean> =
+        context.applicationContext.dataStore.data.map { prefs -> prefs[KEY_ADBLOCK] ?: true }
+
+    suspend fun setAdBlock(context: Context, enabled: Boolean) {
+        context.applicationContext.dataStore.edit { prefs -> prefs[KEY_ADBLOCK] = enabled }
     }
 }

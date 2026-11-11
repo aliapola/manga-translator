@@ -10,7 +10,22 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
+import com.mangatranslator.app.web.AdBlocker
+import java.io.ByteArrayInputStream
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -86,6 +101,15 @@ fun WebReaderScreen(onBack: () -> Unit) {
     var status by remember { mutableStateOf("آدرس چپتر را وارد کنید، صفحه باز شود، سپس «ترجمه کل چپتر» را بزنید.") }
     var job by remember { mutableStateOf<Job?>(null) }
     var desktopMode by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
+    var adBlockOn by remember { mutableStateOf(true) }
+    val adBlockFlag = remember { AtomicBoolean(true) }       // خوانده‌شده از thread شبکه
+    val blockedCount = remember { AtomicInteger(0) }
+    val pageHostRef = remember { arrayOfNulls<String>(1) }
+    LaunchedEffect(Unit) {
+        val on = SettingsStore.adBlockFlow(context).first()
+        adBlockOn = on; adBlockFlag.set(on)
+    }
 
     // WebView's default UA contains "; wv" and "Version/4.0", which many sites
     // (Cloudflare, image CDNs) treat as a bot/embedded view and refuse to serve
@@ -159,6 +183,11 @@ fun WebReaderScreen(onBack: () -> Unit) {
                             )
                         }
                     }
+                    // مسدودسازی تبلیغات (فقط زیرمنابع؛ ناوبری اصلی هرگز)
+                    if (adBlockFlag.get() && !request.isForMainFrame && AdBlocker.shouldBlock(u, pageHostRef[0])) {
+                        blockedCount.incrementAndGet()
+                        return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
+                    }
                     return null
                 }
 
@@ -169,10 +198,13 @@ fun WebReaderScreen(onBack: () -> Unit) {
                     showingOriginal = false
                     pageUrl = url
                     urlField = url
+                    pageHostRef[0] = try { android.net.Uri.parse(url).host?.lowercase() } catch (e: Exception) { null }
+                    if (adBlockFlag.get()) view.evaluateJavascript(AdBlocker.COSMETIC_JS, null)
                     status = "در حال بارگذاری صفحه…"
                 }
 
                 override fun onPageFinished(view: WebView, url: String) {
+                    if (adBlockFlag.get()) view.evaluateJavascript(AdBlocker.COSMETIC_JS, null)
                     status = "صفحه آماده است. برای ترجمه همه تصاویر چپتر، دکمه پایین را بزنید."
                 }
             }
@@ -271,79 +303,142 @@ fun WebReaderScreen(onBack: () -> Unit) {
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("خواندن چپتر از وب") },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, null) } },
-                actions = {
-                    TextButton(onClick = {
-                        desktopMode = !desktopMode
-                        webView.settings.userAgentString = if (desktopMode) desktopUa else mobileUa
-                        webView.reload()
-                    }) { Text(if (desktopMode) "موبایل" else "دسکتاپ") }
-                    IconButton(onClick = { webView.reload() }) { Icon(Icons.Filled.Refresh, "بارگذاری مجدد") }
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surface)
+            .statusBarsPadding()
+            .navigationBarsPadding()
+    ) {
+        // ── هدر فشرده: برگشت | فیلد آدرس | چسباندن | برو | منو ──
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().height(46.dp).padding(horizontal = 2.dp)
+        ) {
+            IconButton(onClick = onBack, modifier = Modifier.size(40.dp)) {
+                Icon(Icons.Filled.ArrowBack, contentDescription = "بازگشت")
+            }
+            Box(
+                contentAlignment = Alignment.CenterStart,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(38.dp)
+                    .clip(RoundedCornerShape(19.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .padding(horizontal = 14.dp)
+            ) {
+                BasicTextField(
+                    value = urlField,
+                    onValueChange = { urlField = it },
+                    singleLine = true,
+                    textStyle = TextStyle(
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 14.sp,
+                        textDirection = TextDirection.Ltr
+                    ),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
+                    keyboardActions = KeyboardActions(onGo = { loadUrl() }),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (urlField.isEmpty()) {
+                    Text(
+                        "آدرس چپتر را وارد یا paste کنید",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 14.sp,
+                        maxLines = 1
+                    )
                 }
-            )
-        },
-        bottomBar = {
-            Surface(tonalElevation = 3.dp) {
-                Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                    if (running && total > 0) {
-                        LinearProgressIndicator(
-                            progress = { done.toFloat() / total },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Spacer(Modifier.height(6.dp))
-                    }
-                    Text(status, style = MaterialTheme.typography.bodySmall)
-                    Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        if (running) {
-                            Button(onClick = { job?.cancel() }, modifier = Modifier.weight(1f)) { Text("توقف") }
-                        } else {
-                            Button(onClick = ::startTranslate, modifier = Modifier.weight(1f)) { Text("ترجمه کل چپتر") }
+            }
+            IconButton(
+                onClick = { clipboard.getText()?.text?.let { urlField = it.trim() } },
+                modifier = Modifier.size(40.dp)
+            ) { Icon(Icons.Filled.ContentPaste, contentDescription = "چسباندن") }
+            IconButton(onClick = { loadUrl() }, modifier = Modifier.size(40.dp)) {
+                Icon(Icons.Filled.Search, contentDescription = "برو")
+            }
+            Box {
+                IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(40.dp)) {
+                    Icon(Icons.Filled.MoreVert, contentDescription = "منو")
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("بارگذاری مجدد") },
+                        onClick = { menuOpen = false; webView.reload() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text(if (desktopMode) "نسخه موبایل" else "نسخه دسکتاپ") },
+                        onClick = {
+                            menuOpen = false
+                            desktopMode = !desktopMode
+                            webView.settings.userAgentString = if (desktopMode) desktopUa else mobileUa
+                            webView.reload()
                         }
-                        OutlinedButton(
-                            enabled = !running && translatedCount > 0,
-                            onClick = {
-                                showingOriginal = !showingOriginal
-                                scope.launch { evalJs(webView, "window.MT_show($showingOriginal);") }
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) { Text(if (showingOriginal) "نمایش ترجمه" else "نمایش اصل") }
-                    }
+                    )
+                    DropdownMenuItem(
+                        text = { Text(if (adBlockOn) "حذف تبلیغات: روشن (${blockedCount.get()} مسدود)" else "حذف تبلیغات: خاموش") },
+                        onClick = {
+                            menuOpen = false
+                            adBlockOn = !adBlockOn
+                            adBlockFlag.set(adBlockOn)
+                            scope.launch { SettingsStore.setAdBlock(context, adBlockOn) }
+                            webView.reload()
+                        }
+                    )
                 }
             }
         }
-    ) { padding ->
-        Column(Modifier.padding(padding).fillMaxSize()) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)
-            ) {
-                OutlinedTextField(
-                    value = urlField,
-                    onValueChange = { urlField = it },
-                    // label همیشه دیده می‌شود (placeholder فقط هنگام فوکوس نمایش داده می‌شود)
-                    label = { Text("آدرس چپتر را اینجا وارد یا paste کنید") },
-                    textStyle = LocalTextStyle.current.copy(textDirection = TextDirection.Ltr),
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
-                    keyboardActions = KeyboardActions(onGo = { loadUrl() }),
-                    modifier = Modifier.weight(1f)
-                )
-                Spacer(Modifier.width(8.dp))
-                OutlinedButton(onClick = {
-                    clipboard.getText()?.text?.let { urlField = it.trim() }
-                }) { Text("چسباندن") }
-                Spacer(Modifier.width(4.dp))
-                Button(onClick = { loadUrl() }) { Text("برو") }
+
+        // ── صفحه وب ──
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            AndroidView(factory = { webView }, modifier = Modifier.fillMaxSize())
+        }
+
+        // ── نوار پایین فشرده ──
+        Surface(tonalElevation = 3.dp) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
+                if (running && total > 0) {
+                    LinearProgressIndicator(
+                        progress = { done.toFloat() / total },
+                        modifier = Modifier.fillMaxWidth().height(3.dp)
+                    )
+                    Spacer(Modifier.height(4.dp))
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        status,
+                        fontSize = 11.sp,
+                        lineHeight = 14.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(
+                        enabled = !running && translatedCount > 0,
+                        onClick = {
+                            showingOriginal = !showingOriginal
+                            scope.launch { evalJs(webView, "window.MT_show($showingOriginal);") }
+                        },
+                        contentPadding = PaddingValues(horizontal = 10.dp),
+                        modifier = Modifier.height(36.dp)
+                    ) { Text(if (showingOriginal) "ترجمه" else "اصل", fontSize = 12.sp) }
+                    Spacer(Modifier.width(6.dp))
+                    if (running) {
+                        Button(
+                            onClick = { job?.cancel() },
+                            contentPadding = PaddingValues(horizontal = 12.dp),
+                            modifier = Modifier.height(36.dp)
+                        ) { Text("توقف", fontSize = 12.sp) }
+                    } else {
+                        Button(
+                            onClick = ::startTranslate,
+                            contentPadding = PaddingValues(horizontal = 12.dp),
+                            modifier = Modifier.height(36.dp)
+                        ) { Text("ترجمه چپتر", fontSize = 12.sp) }
+                    }
+                }
             }
-            AndroidView(
-                factory = { webView },
-                modifier = Modifier.weight(1f).fillMaxWidth()
-            )
         }
     }
 }
